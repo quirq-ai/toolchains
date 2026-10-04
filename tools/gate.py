@@ -123,7 +123,9 @@ def _risky_permissions(doc: dict):
             for scope in ("checks", "statuses"):
                 if perms.get(scope) not in (None, "read", "none"):
                     yield where, f"{scope}: {perms.get(scope)}"
-        elif perms not in ("read-all", None) or (perms is None and where != "the workflow"):
+        elif perms is None and where != "the workflow":
+            yield where, "an empty permissions value (the repo default applies)"
+        elif perms not in ("read-all", None):
             yield where, f"permissions: {perms!r}"
 
 

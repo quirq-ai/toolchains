@@ -167,6 +167,8 @@ def test_pin_must_match_the_spec(repo):
     # no top-level permissions: the repo default applies
     "name: x\non: pull_request\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps: [{run: 'true'}]\n",
     "not: [valid\n",
+    # a merge key, which the strict loader refuses
+    "name: x\non: pull_request\npermissions: {}\nbase: &b {runs-on: ubuntu-24.04}\njobs:\n  a:\n    <<: *b\n    steps: [{run: 'true'}]\n",
     # an empty job-level permissions value
     "name: x\non: pull_request\npermissions: {}\njobs:\n  a:\n    permissions:\n    runs-on: ubuntu-24.04\n    steps: [{run: 'true'}]\n",
     # permissions present but empty, so the repo default applies
