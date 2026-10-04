@@ -16,8 +16,10 @@
 #   promoted.toml and .github/ together.
 # - After a push, main is the trust root and its own tools run.
 # Every Python call runs isolated (-I). This file itself comes from the PR (or the merge result),
-# so a PR that edits .github/ or tools/ can change what runs here: that is what code-owner review
-# of those paths is for (.github/CODEOWNERS, required by the toolchains ruleset). There is no
+# so a PR that edits it can change which tools run, even its own: that is what code-owner review
+# of .github/ is for (.github/CODEOWNERS, required by the toolchains ruleset). A PR that edits only
+# tools/ is still judged by main's tools; it changes what judges later PRs, so tools/ is
+# code-owned too. There is no
 # concurrency group: a cancelled required run blocks the PR until someone re-runs it. Events
 # caused by GITHUB_TOKEN start no run.
 name: promotion-gate
@@ -71,14 +73,17 @@ jobs:
           case "$GITHUB_EVENT_NAME" in
             pull_request) tools=$(git rev-parse refs/remotes/origin/main) ;;
             merge_group) tools=$BASE ;;
-            *) tools=$HEAD ;;
+            push) tools=$HEAD ;;
+            *) echo "::error::promotion-gate does not handle $GITHUB_EVENT_NAME events"; exit 1 ;;
           esac
           git worktree add --detach "$GATE" "$tools"
           # -I keeps the checkout off sys.path, so a pip/ directory in it cannot run here.
           python -I -m pip install --quiet --no-deps --require-hashes -r "$GATE/tools/gate-requirements.txt"
 
-          python -I "$GATE/tools/gate.py" prepare --event "$GITHUB_EVENT_NAME" --base "$BASE" \
-            --head "$HEAD" --trusted "$tools" --gate "$GATE" --out "$RUNNER_TEMP" > "$RUNNER_TEMP/plan.json"
+          # From inside the trusted worktree, so git reads main's .gitattributes, not the PR's
+          # (git merge-tree honours working-tree attributes such as merge=union).
+          (cd "$GATE" && python -I tools/gate.py prepare --event "$GITHUB_EVENT_NAME" --base "$BASE" \
+            --head "$HEAD" --trusted "$tools" --gate "$GATE" --out "$RUNNER_TEMP") > "$RUNNER_TEMP/plan.json"
           jq .changed "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/changed.json"
           cat "$RUNNER_TEMP/changed.json"
           echo "merged=$(jq -r .merged "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"

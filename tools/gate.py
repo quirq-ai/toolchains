@@ -41,8 +41,11 @@ PROMOTION_FILES = {"promoted.toml", "README.md"}
 GATE_WORKFLOW = ".github/workflows/promotion-gate.yml"
 GATE_JOB = "promotion-gate"
 GATE_TIMEOUT = 40  # minutes; the merge queue's admission limit (quirq-ai/gate, gate.toml)
-# When the gate runs. A PR cannot change this: the trusted copy of this constant judges it, so a
-# change to the triggers needs an owner to land it outside the gate.
+# When the gate runs. A PR that changes the gate's triggers is judged by the trusted copy of this
+# constant and refused, both on the PR and in the merge queue. Such a change needs suraj (the code
+# owner of .github/ and tools/) to take promotion-gate out of the required checks, merge it, and
+# put the check back. This is not a security boundary on its own: the workflow file comes from the
+# PR, so code-owner review of .github/ is what stops a PR from editing the step that picks the tools.
 GATE_TRIGGERS = {
     "pull_request": {"branches": ["main"], "types": ["opened", "synchronize", "reopened", "edited"]},
     "merge_group": {"types": ["checks_requested"]},
