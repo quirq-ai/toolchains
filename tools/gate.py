@@ -118,12 +118,13 @@ def _has_concurrency(doc: dict) -> bool:
 
 
 def _timeout_problems(doc: dict) -> list[str]:
-    """Why each gate job could outlive the merge queue's limit, as (job, what was found)."""
+    """Why each gate job could outlive the merge queue's limit, one message per job."""
     jobs = doc.get("jobs")
     out = []
     for j, job in (jobs.items() if isinstance(jobs, dict) else []):
         if not isinstance(job, dict):
-            continue  # reported as a malformed job elsewhere
+            out.append(f"job {j!r} is not a mapping (got {job!r})")
+            continue
         if "uses" in job:
             out.append(f"job {j!r} calls a reusable workflow, which cannot set timeout-minutes; "
                        "run the steps in this file instead")
