@@ -81,7 +81,8 @@ jobs:
 
   publish:
     needs: [plan, build]
-    if: github.event_name != 'pull_request'
+    # Only main is ever staged, so every staged artifact was built from a commit on main.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +92,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # signs the build provenance attestation
+      attestations: write
     env:
       QQ_NAME: ${{ matrix.name }}
     steps:
@@ -103,6 +106,7 @@ jobs:
           path: out
       - uses: oras-project/setup-oras@v2
       - name: Publish to staging
+        id: push
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -124,6 +128,8 @@ jobs:
             "$file:application/vnd.quirq.toolchain.layer.v1.tar+gzip"
           digest=$(oras resolve "$repo:$tag")
           ref="oci://$repo@$digest"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           jq --arg ref "$ref" --arg tag "$tag" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '. + {ref: $ref, staging_tag: $tag, build_run: $run}' "$QQ_NAME.record.json" > staged.json
           {
@@ -138,3 +144,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat staged.json
+      # Signed proof that this workflow, on main at this commit, produced this digest. The
+      # promotions gate verifies it; the revision annotation alone is only the pusher's word.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ steps.push.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

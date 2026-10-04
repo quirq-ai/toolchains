@@ -279,3 +279,153 @@ def test_consumers_use_the_toolchain_on_path(spec_dir, tmp_path, fake_download, 
 def test_cli_validate_passes_on_repo(capsys):
     assert qqtc.main(["validate"]) == 0
     assert "PASS" in capsys.readouterr().out
+
+
+# --- promotion -------------------------------------------------------------------------------
+
+REPO_CFG = {"schema": "quirq-toolchains/1", "backend": "github", "github": {"registry": "ghcr.io/quirq-ai/toolchains"}}
+DIGEST = "sha256:" + "ab" * 32
+
+
+def staged_record(**overrides):
+    record = {
+        "name": "demo",
+        "version": "1.2.3",
+        "revision": 1,
+        "platform": "linux-x86_64",
+        "file": "demo-1.2.3-r1-linux-x86_64.tar.gz",
+        "layer_sha256": "cd" * 32,
+        "size": 10,
+        "built_from": "ef" * 20,
+        "ref": f"oci://ghcr.io/quirq-ai/toolchains/demo@{DIGEST}",
+        "staging_tag": "staging-1.2.3-r1-efefefefefef",
+        "build_run": "https://github.com/quirq-ai/toolchains/actions/runs/1",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_promote_writes_a_readable_pin(spec_dir, tmp_path):
+    promoted = tmp_path / "promoted.toml"
+    qqtc.promote(staged_record(), promoted, spec_dir, REPO_CFG)
+    entries = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)
+    assert entries["demo"]["ref"].endswith(DIGEST)
+    assert "staging_tag" not in entries["demo"] and "file" not in entries["demo"]
+
+
+def test_promote_replaces_only_its_own_entry(spec_dir, tmp_path):
+    write_spec(spec_dir, "other", (spec_dir / "demo" / "toolchain.toml").read_text().replace('"demo"', '"other"'))
+    promoted = tmp_path / "promoted.toml"
+    qqtc.promote(staged_record(), promoted, spec_dir, REPO_CFG)
+    other = staged_record(name="other", ref=f"oci://ghcr.io/quirq-ai/toolchains/other@{DIGEST}")
+    qqtc.promote(other, promoted, spec_dir, REPO_CFG)
+    newer = "sha256:" + "12" * 32
+    qqtc.promote(staged_record(ref=f"oci://ghcr.io/quirq-ai/toolchains/demo@{newer}"), promoted, spec_dir, REPO_CFG)
+    entries = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)
+    assert entries["demo"]["ref"].endswith(newer)
+    assert entries["other"]["ref"].endswith(DIGEST)
+
+
+def test_promote_output_is_stable(spec_dir, tmp_path):
+    a, b = tmp_path / "a.toml", tmp_path / "b.toml"
+    qqtc.promote(staged_record(), a, spec_dir, REPO_CFG)
+    qqtc.promote(staged_record(), b, spec_dir, REPO_CFG)
+    qqtc.promote(staged_record(), b, spec_dir, REPO_CFG)
+    assert a.read_text() == b.read_text()
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"ref": "oci://ghcr.io/quirq-ai/toolchains/demo:latest"}, "digest, never a tag"),
+        ({"ref": f"oci://ghcr.io/someone-else/demo@{DIGEST}"}, "ref must be"),
+        ({"version": "1.2.4"}, "promote only a build of the spec"),
+        ({"revision": 2}, "promote only a build of the spec"),
+        ({"built_from": ""}, "built_from"),
+        ({"layer_sha256": "nope"}, "layer_sha256"),
+        ({"build_run": None}, "build_run"),
+        ({"build_run": "https://github.com/quirq-ai/toolchains/actions/runs/1\u00e9"}, "build_run"),
+        ({"build_run": "https://example.com/x"}, "build_run"),
+        ({"revision": True}, "integer"),
+        ({"platform": "linux-aarch64"}, "platform"),
+        ({"ref": "oci://ghcr.io/quirq-ai/toolchains/demo@sha256:" + "AB" * 32}, "digest"),
+        ({"ref": "oci://ghcr.io/quirq-ai/toolchains/demo@sha256:abc"}, "digest"),
+    ],
+)
+def test_promote_rejects_bad_records(spec_dir, tmp_path, overrides, message):
+    with pytest.raises(qqtc.SpecError, match=message):
+        qqtc.promote(staged_record(**overrides), tmp_path / "promoted.toml", spec_dir, REPO_CFG)
+    assert not (tmp_path / "promoted.toml").exists()
+
+
+def test_promoted_entry_needs_a_spec(spec_dir, tmp_path):
+    promoted = tmp_path / "promoted.toml"
+    qqtc.promote(staged_record(), promoted, spec_dir, REPO_CFG)
+    promoted.write_text(promoted.read_text().replace('name = "demo"', 'name = "ghost"').replace("/demo@", "/ghost@"))
+    with pytest.raises(qqtc.SpecError, match="no toolchains/ghost"):
+        qqtc.load_promoted(promoted, REPO_CFG, spec_dir)
+
+
+def test_promoted_changed_lists_only_new_or_moved_pins(spec_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(qqtc, "load_repo_config", lambda path=None: REPO_CFG)
+    base, now = tmp_path / "base.toml", tmp_path / "now.toml"
+    assert qqtc.promoted_changed(None, now, spec_dir) == []
+    qqtc.promote(staged_record(), now, spec_dir, REPO_CFG)
+    assert [e["name"] for e in qqtc.promoted_changed(None, now, spec_dir)] == ["demo"]
+    base.write_text(now.read_text())
+    assert qqtc.promoted_changed(base, now, spec_dir) == []
+    (tmp_path / "empty.toml").write_text("")
+    assert len(qqtc.promoted_changed(tmp_path / "empty.toml", now, spec_dir)) == 1
+
+
+def test_promoted_changed_rejects_a_pin_that_disagrees_with_its_spec(spec_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(qqtc, "load_repo_config", lambda path=None: REPO_CFG)
+    now = tmp_path / "now.toml"
+    qqtc.promote(staged_record(), now, spec_dir, REPO_CFG)
+    now.write_text(now.read_text().replace('version = "1.2.3"', 'version = "1.2.2"'))
+    with pytest.raises(qqtc.SpecError, match="does not match its spec"):
+        qqtc.promoted_changed(None, now, spec_dir)
+
+
+def test_cli_promote_reads_stdin(spec_dir, tmp_path, monkeypatch, capsys):
+    real_promote = qqtc.promote
+    promoted = tmp_path / "promoted.toml"
+    monkeypatch.setattr(qqtc, "promote", lambda record: real_promote(record, promoted, spec_dir, REPO_CFG))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(staged_record())))
+    assert qqtc.main(["promote", "demo", "--record", "-"]) == 0
+    assert "promoted demo 1.2.3-r1" in capsys.readouterr().out
+    assert promoted.exists()
+
+
+def test_cli_promote_refuses_a_record_for_another_toolchain(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(staged_record())))
+    assert qqtc.main(["promote", "python", "--record", "-"]) == 1
+    assert "not 'python'" in capsys.readouterr().err
+
+
+def test_promote_rejects_a_record_that_is_not_an_object(spec_dir, tmp_path):
+    with pytest.raises(qqtc.SpecError, match="JSON object"):
+        qqtc.promote(["demo"], tmp_path / "promoted.toml", spec_dir, REPO_CFG)
+
+
+def test_cli_promote_rejects_a_non_object_record(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("[1, 2]"))
+    assert qqtc.main(["promote", "demo", "--record", "-"]) == 1
+    assert "JSON object" in capsys.readouterr().err
+
+
+def test_written_promoted_file_round_trips(spec_dir, tmp_path):
+    promoted = tmp_path / "promoted.toml"
+    record = staged_record()
+    qqtc.promote(record, promoted, spec_dir, REPO_CFG)
+    entry = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)["demo"]
+    assert entry == {k: record[k] for k in qqtc.PROMOTED_KEYS}
+
+
+def test_validate_reports_a_broken_promoted_file(spec_dir, tmp_path):
+    cfg = tmp_path / "toolchains.toml"
+    cfg.write_text('schema = "quirq-toolchains/1"\nbackend = "github"\n[github]\nregistry = "ghcr.io/quirq-ai/toolchains"\n')
+    promoted = tmp_path / "promoted.toml"
+    promoted.write_text('schema = "quirq-toolchains-promoted/1"\n[[toolchain]]\nname = "demo"\n')
+    problems = qqtc.validate(spec_dir, cfg, promoted)
+    assert len(problems) == 1 and "missing key" in problems[0]
