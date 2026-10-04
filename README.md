@@ -37,9 +37,11 @@ Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-TCH-01 | Python toolchain (CPython 3.14.x) | #2 | built and staged; pin waits on V0-TCH-03 and V0-SYN-01 |
-| V0-TCH-02 | Node.js 24 LTS and pnpm toolchain | #3 | built and staged; innernet builds with it in CI |
-| V0-TCH-03 | Staging and promotion | #4, #5 | first promotion in review |
+| V0-TCH-01 | Python toolchain (CPython 3.14.8) | #2, #5 | Built by CI, promoted by digest; xo-space's tests and route parity pass on it in CI. Pinning it in xo-space's `infra/repo.toml` waits on V0-SYN-01 (manifest schema). |
+| V0-TCH-02 | Node.js 24.21.0 LTS and pnpm 11.28.2 | #3, #5 | Built and promoted by digest; innernet installs, typechecks and builds with it in CI. |
+| V0-TCH-03 | Staging and promotion | #4, #5 | Promotion PR #5 passed the `promotions` gate and landed. "Through the gate" in the merge-queue sense waits on V0-ORG-03 (merge queue and rulesets). |
+
+Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) reads them from there.
 
 ## Working here
 
