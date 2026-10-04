@@ -1,6 +1,8 @@
 # Required check for this repo. Hand-written until infra-config generates builders for infra repos.
 # Runs on every PR and in the merge queue, so it verifies the exact merge result. The `ci` job at
-# the end is the one to require: it fails unless every job before it passed.
+# the end is the one to require: it fails unless every job before it passed. Promotions have their
+# own check, `promotion-gate` (promotion-gate.yml), which runs only trusted code. Neither is
+# required yet; that waits on suraj's rulesets (V0-ORG-03).
 name: ci
 on:
   pull_request:
@@ -27,110 +29,8 @@ jobs:
       - run: python tools/qqtc.py validate
       - run: python -m pytest -q -p no:cacheprovider
 
-  # A promotion PR is the gate for a toolchain pin. Every new or moved entry in promoted.toml
-  # must be bytes that build.yml, running on main, signed provenance for; its manifest must be
-  # the one-layer shape qq sync expects; the spec at that commit must match the pin's version;
-  # and the pulled bytes must pass the smoke tests and consumer builds again.
-  # This job runs the PR's own copy of this file and of qqtc, so review of .github/, tools/ and
-  # promoted.toml is part of the gate (TODO(suraj): owners for those paths, V0-ORG-02).
-  promotions:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.14"
-      - name: Find new or moved pins
-        id: changed
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: |
-          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "::error::cannot find the base commit '$BASE' to compare promoted.toml against"
-            exit 1
-          fi
-          if git cat-file -e "$BASE:promoted.toml" 2>/dev/null; then
-            git show "$BASE:promoted.toml" > "$RUNNER_TEMP/base.toml"
-          else
-            : > "$RUNNER_TEMP/base.toml"   # nothing was promoted before this change
-          fi
-          python tools/qqtc.py promoted-changed --base "$RUNNER_TEMP/base.toml" > "$RUNNER_TEMP/changed.json"
-          cat "$RUNNER_TEMP/changed.json"
-          echo "count=$(jq length "$RUNNER_TEMP/changed.json")" >> "$GITHUB_OUTPUT"
-      - name: Set up ORAS
-        if: steps.changed.outputs.count != '0'
-        uses: oras-project/setup-oras@v2
-      - name: Pull and check each new pin
-        if: steps.changed.outputs.count != '0'
-        env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$REGISTRY_USER" --password-stdin
-          jq -c '.[]' "$RUNNER_TEMP/changed.json" | while read -r entry; do
-            name=$(jq -r .name <<<"$entry")
-            ref=$(jq -r '.ref | ltrimstr("oci://")' <<<"$entry")
-            layer=$(jq -r .layer_sha256 <<<"$entry")
-            built_from=$(jq -r .built_from <<<"$entry")
-            fail() { echo "::error::$name: $*"; exit 1; }
-            echo "::group::check $name ($ref)"
-
-            # 1. Provenance: build.yml on main, at built_from, produced this digest.
-            gh attestation verify "oci://$ref" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build.yml" \
-              --source-ref refs/heads/main --source-digest "$built_from" \
-              || fail "no build provenance from build.yml on main at $built_from for this digest"
-
-            # 2. The spec at that commit describes the version the pin claims.
-            git show "$built_from:toolchains/$name/toolchain.toml" > "$RUNNER_TEMP/spec-$name.toml" \
-              || fail "toolchains/$name/toolchain.toml does not exist at $built_from"
-            python - "$RUNNER_TEMP/spec-$name.toml" "$entry" <<'PY' || fail "the pin's version does not match the spec at built_from"
-          import json, sys, tomllib
-          spec = tomllib.load(open(sys.argv[1], "rb"))["toolchain"]
-          entry = json.loads(sys.argv[2])
-          bad = [k for k in ("version", "revision", "platform") if spec[k] != entry[k]]
-          sys.exit(f"mismatch in {bad}" if bad else 0)
-          PY
-
-            # 3. The manifest is exactly one toolchain layer, the one the pin names.
-            oras manifest fetch "$ref" > "$RUNNER_TEMP/manifest-$name.json"
-            jq -e --arg layer "sha256:$layer" '
-              .artifactType == "application/vnd.quirq.toolchain.v1"
-              and (.layers | length) == 1
-              and .layers[0].digest == $layer
-              and .layers[0].mediaType == "application/vnd.quirq.toolchain.layer.v1.tar+gzip"
-            ' "$RUNNER_TEMP/manifest-$name.json" >/dev/null || fail "manifest is not one toolchain layer with digest sha256:$layer"
-
-            # 4. The pulled bytes are that layer.
-            dir="$RUNNER_TEMP/pull/$name"
-            oras pull "$ref" -o "$dir"
-            tarball=$(jq -r '.layers[0].annotations["org.opencontainers.image.title"]' "$RUNNER_TEMP/manifest-$name.json")
-            echo "$layer  $dir/$tarball" | sha256sum --strict -c -
-            python tools/qqtc.py unpack "$dir/$tarball" "$RUNNER_TEMP/root/$name"
-            echo "::endgroup::"
-          done
-          oras logout ghcr.io   # consumer code below runs without registry credentials
-      - name: Smoke-test and build consumers from the pulled bytes
-        if: steps.changed.outputs.count != '0'
-        run: |
-          for name in $(jq -r '.[].name' "$RUNNER_TEMP/changed.json"); do
-            echo "::group::verify $name"
-            python tools/qqtc.py smoke "$name" "$RUNNER_TEMP/root/$name"
-            python tools/qqtc.py consumers "$name" "$RUNNER_TEMP/root/$name" --work "$RUNNER_TEMP/consumers/$name"
-            echo "::endgroup::"
-          done
-
   ci:
-    needs: [unit, promotions]
+    needs: [unit]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 2

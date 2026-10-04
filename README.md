@@ -24,9 +24,10 @@ digest, never by a moving version.
 2. When it lands, `build` on `main` stages it as `ghcr.io/quirq-ai/toolchains/<name>:staging-…`
    and prints a ready-made record in the run summary.
 3. Promote it in its own PR: `python tools/qqtc.py promote <name> --record staged.json`, which
-   rewrites `promoted.toml`. The `promotions` job in `ci` pulls the digest, checks that a staging
-   build of a commit on `main` produced exactly those bytes, and re-runs the smoke tests and
-   consumer builds on them. A reviewer approves; then it merges.
+   rewrites `promoted.toml`. That PR may change only `promoted.toml` and `README.md`. The
+   `promotion-gate` check pulls the digest, checks that a staging build of a commit on `main`
+   produced exactly those bytes, and re-runs the smoke tests and consumer builds on them. It runs
+   main's workflow, `qqtc` and specs, never the PR's (not yet a required check: V0-ORG-03). A reviewer approves; then it merges.
 4. The toolchain roller (quirq-ai/rollers, V0-ROL-01) reads `promoted.toml` and opens pin-update
    PRs in product repos.
 
@@ -39,7 +40,7 @@ Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra
 |---|---|---|---|
 | V0-TCH-01 | Python toolchain (CPython 3.14.8) | #2, #5 | Built by CI, promoted by digest; xo-space's tests and route parity pass on it in CI. Pinning it in xo-space's `infra/repo.toml` waits on V0-SYN-01 (manifest schema). |
 | V0-TCH-02 | Node.js 24.21.0 LTS and pnpm 11.28.2 | #3, #5 | Built and promoted by digest; innernet installs, typechecks and builds with it in CI. |
-| V0-TCH-03 | Staging and promotion | #4, #5 | Promotion PR #5 passed the `promotions` gate and landed. "Through the gate" in the merge-queue sense waits on V0-ORG-03 (merge queue and rulesets). |
+| V0-TCH-03 | Staging and promotion | #4, #5 | Promotion PR #5 passed the promotion gate and landed. "Through the gate" in the merge-queue sense waits on V0-ORG-03 (merge queue and rulesets). |
 
 Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) reads them from there.
 
