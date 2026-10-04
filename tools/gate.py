@@ -10,7 +10,8 @@ of git as data; nothing from that change is imported or run.
         {"changed": [...new or moved pins...], "merged": "<tree or commit the pins land in>"}
     gate.py check-workflows DIR
         check that only promotion-gate.yml defines a job reported as `promotion-gate`, that the
-        gate's triggers match main's, and that no workflow can write check runs or statuses
+        gate's triggers match main's and it sets no concurrency, and that no workflow can write
+        check runs or statuses
 
 Rules, by event:
 - A PR (pull_request_target, or pull_request when this runs as a required workflow) is judged
@@ -109,6 +110,12 @@ def _load_yaml(text: str):
     return yaml.load(text, Loader=Strict)
 
 
+def _has_concurrency(doc: dict) -> bool:
+    jobs = doc.get("jobs")
+    jobs = jobs.values() if isinstance(jobs, dict) else []
+    return "concurrency" in doc or any(isinstance(j, dict) and "concurrency" in j for j in jobs)
+
+
 def _risky_permissions(doc: dict):
     """(where, what) for each grant that lets a token write check runs or commit statuses."""
     scopes = [("the workflow", doc)]
@@ -151,6 +158,9 @@ def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
         if path == GATE_WORKFLOW and _triggers(doc) != GATE_TRIGGERS:
             problems.append(f"{path}: its triggers differ from gate.py's GATE_TRIGGERS; a change to "
                             "when the gate runs needs an owner and lands outside the gate")
+        if path == GATE_WORKFLOW and _has_concurrency(doc):
+            problems.append(f"{path}: must not set concurrency; as a required ruleset workflow a "
+                            "cancelled run blocks the PR until someone re-runs it")
         if "on" in doc and True in doc:
             problems.append(f"{path}: declares its triggers twice (`on` and \"on\")")
         if not (isinstance(doc.get("permissions"), dict) or doc.get("permissions") == "read-all"):

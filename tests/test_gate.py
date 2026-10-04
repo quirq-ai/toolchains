@@ -222,6 +222,28 @@ def test_changing_the_gate_triggers_is_refused(repo):
         run_prepare(repo, head)
 
 
+@pytest.mark.parametrize("extra", [
+    "concurrency:\n  group: g\n  cancel-in-progress: true\n",
+    "concurrency: g\n",
+])
+def test_gate_concurrency_is_refused(repo, extra):
+    branch(repo)
+    yml = GATE_YML.replace("jobs:\n", extra + "jobs:\n", 1)
+    assert yml != GATE_YML
+    head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
+    with pytest.raises(gate.GateError, match="must not set concurrency"):
+        run_prepare(repo, head)
+
+
+def test_gate_job_concurrency_is_refused(repo):
+    branch(repo)
+    yml = GATE_YML.replace("    runs-on: ubuntu-24.04\n", "    runs-on: ubuntu-24.04\n    concurrency: g\n", 1)
+    assert yml != GATE_YML
+    head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
+    with pytest.raises(gate.GateError, match="must not set concurrency"):
+        run_prepare(repo, head)
+
+
 def test_removing_the_gate_workflow_is_refused(repo):
     branch(repo)
     head = commit(repo, {".github/workflows/promotion-gate.yml": None})
