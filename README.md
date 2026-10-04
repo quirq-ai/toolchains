@@ -27,7 +27,7 @@ digest, never by a moving version.
    rewrites `promoted.toml`. That PR may change only `promoted.toml` and `README.md`. The
    `promotion-gate` check pulls the digest, checks that a staging build of a commit on `main`
    produced exactly those bytes, and re-runs the smoke tests and consumer builds on them. It runs
-   the base branch's workflow, `qqtc` and specs, never the PR's. A reviewer approves; then it merges.
+   main's workflow, `qqtc` and specs, never the PR's (not yet a required check: V0-ORG-03). A reviewer approves; then it merges.
 4. The toolchain roller (quirq-ai/rollers, V0-ROL-01) reads `promoted.toml` and opens pin-update
    PRs in product repos.
 

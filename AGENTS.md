@@ -3,7 +3,8 @@
 How an agent changes this repo safely. Read `README.md` first.
 
 - Every change is a pull request, titled with its work item id (for example `V0-TCH-01: ...`).
-  It lands only when the `ci` and `promotion-gate` checks are green on the merge result.
+  It lands only when the `ci` and `promotion-gate` checks are green on the merge result (not
+  yet enforced by GitHub until the rulesets land, V0-ORG-03, so check them before merging).
 - Toolchains are referenced only by digest. Never point a consumer at a tag.
 - Promoting a toolchain is a reviewed PR that edits `promoted.toml` and nothing else except
   `README.md`; `promotion-gate` refuses anything more. Change the gate (`.github/`, `tools/`,

@@ -1,7 +1,8 @@
 # Required check for this repo. Hand-written until infra-config generates builders for infra repos.
 # Runs on every PR and in the merge queue, so it verifies the exact merge result. The `ci` job at
 # the end is the one to require: it fails unless every job before it passed. Promotions have their
-# own required check, `promotion-gate` (promotion-gate.yml), which runs only trusted code.
+# own check, `promotion-gate` (promotion-gate.yml), which runs only trusted code. Neither is
+# required yet; that waits on suraj's rulesets (V0-ORG-03).
 name: ci
 on:
   pull_request:
