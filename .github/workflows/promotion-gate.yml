@@ -19,9 +19,8 @@
 # so a PR that edits it can change which tools run, even its own: that is what code-owner review
 # of .github/ is for (.github/CODEOWNERS, required by the toolchains ruleset). A PR that edits only
 # tools/ is still judged by main's tools; it changes what judges later PRs, so tools/ is
-# code-owned too. There is no
-# concurrency group: a cancelled required run blocks the PR until someone re-runs it. Events
-# caused by GITHUB_TOKEN start no run.
+# code-owned too. There is no concurrency group: a cancelled required run blocks the PR until
+# someone re-runs it. Events caused by GITHUB_TOKEN start no run.
 name: promotion-gate
 on:
   pull_request:
