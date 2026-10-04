@@ -34,7 +34,7 @@ digest, never by a moving version.
    another check named `promotion-gate`, changed gate triggers, or a token that can write checks
    or statuses (`tools/gate.py`). A reviewer approves; then it merges through the merge queue,
    where the gate runs again. The check is advisory until the toolchains ruleset requires it
-   (V0-ORG-03).
+   (V0-ORG-03), and the gate's next settings run makes it required.
 4. The toolchain roller (quirq-ai/rollers, V0-ROL-01) reads `promoted.toml` and opens pin-update
    PRs in product repos.
 
@@ -66,6 +66,17 @@ Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) r
   with write access can push a branch, with no PR and no review, whose workflow has
   `checks: write` and posts a green `promotion-gate` check on any commit, or post a status with a
   token. So the roller must re-verify each pin rather than trust `promoted.toml` alone.
+
+## Changing when the gate runs
+
+The gate runs on PRs into `main`, in the merge queue and on push to `main`. Those triggers are
+pinned in `GATE_TRIGGERS` in `tools/gate.py`, and the gate judges every PR with main's copy of it.
+So a PR that changes the triggers in `.github/workflows/promotion-gate.yml` and `GATE_TRIGGERS`
+together is refused on the PR and again in the queue, by design. Once `promotion-gate` is a
+required check, such a PR cannot merge through the gate. It needs an owner, outside the gate:
+suraj takes `promotion-gate` out of the toolchains ruleset's required checks, merges the PR, and
+puts the check back. Every other PR, including changes to the gate's code that keep its
+triggers, goes through the gate as usual.
 
 ## Working here
 
