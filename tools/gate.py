@@ -111,17 +111,22 @@ def _load_yaml(text: str):
 
 def _risky_permissions(doc: dict):
     """(where, what) for each grant that lets a token write check runs or commit statuses."""
-    scopes = [("the workflow", doc.get("permissions"))]
+    scopes = [("the workflow", doc)]
     jobs = doc.get("jobs")
     if isinstance(jobs, dict):
-        scopes += [(f"job {j!r}", job.get("permissions")) for j, job in jobs.items() if isinstance(job, dict)]
-    for where, perms in scopes:
-        if perms == "write-all" or (isinstance(perms, str) and "${{" in perms):
-            yield where, f"permissions: {perms}"
-        elif isinstance(perms, dict):
+        scopes += [(f"job {j!r}", job) for j, job in jobs.items() if isinstance(job, dict)]
+    for where, table in scopes:
+        if "permissions" not in table:
+            continue  # a job without the key inherits the workflow's, which must be set
+        perms = table["permissions"]
+        if isinstance(perms, dict):
             for scope in ("checks", "statuses"):
                 if perms.get(scope) not in (None, "read", "none"):
                     yield where, f"{scope}: {perms.get(scope)}"
+        elif perms is None and where != "the workflow":
+            yield where, "an empty permissions value (the repo default applies)"
+        elif perms not in ("read-all", None):
+            yield where, f"permissions: {perms!r}"
 
 
 def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
