@@ -1,5 +1,6 @@
 # Builds every toolchain, smoke-tests it, and builds its pinned consumer repos with it.
-# On main (or a manual run) it also publishes each toolchain to staging on the registry.
+# On main it also publishes each toolchain to staging on the registry, before any consumer code runs.
+# Actions in the publish job are pinned by commit, since that job can push and sign.
 # This is the github backend's builder; qqtc itself does not know about GitHub.
 name: build
 on:
@@ -42,7 +43,9 @@ jobs:
         name: ${{ fromJSON(needs.plan.outputs.names) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # No write permissions: this job runs build scripts and consumer repos' tests.
+    # No write permissions: this job runs build scripts. Consumer repos' code runs in the
+    # consumers job, after publish, so their dependencies never share a job with the bytes
+    # that get signed or run before those bytes are published.
     permissions:
       contents: read
     env:
@@ -64,7 +67,7 @@ jobs:
           fi
       - name: Build
         run: python tools/qqtc.py build "$QQ_NAME" --out out
-      # Keep the built bytes before anything else runs, so smoke and consumer code cannot
+      # Keep the built bytes before anything else runs, so smoke-test code cannot
       # change what gets published.
       - uses: actions/upload-artifact@v7
         with:
@@ -76,8 +79,6 @@ jobs:
         run: |
           python tools/qqtc.py unpack out/*.tar.gz "$RUNNER_TEMP/root"
           python tools/qqtc.py smoke "$QQ_NAME" "$RUNNER_TEMP/root"
-      - name: Build consumer repos with it
-        run: python tools/qqtc.py consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"
 
   publish:
     needs: [plan, build]
@@ -97,14 +98,14 @@ jobs:
     env:
       QQ_NAME: ${{ matrix.name }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: toolchain-${{ matrix.name }}
           path: out
-      - uses: oras-project/setup-oras@v2
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Publish to staging
         id: push
         env:
@@ -135,7 +136,7 @@ jobs:
           {
             echo "### Staged \`$QQ_NAME\`"
             echo
-            echo "Promote it with a PR that runs:"
+            echo "Staging happens before consumer builds run. Promote it only if this run's \`consumers\` job is green, with a PR that runs:"
             echo
             echo '```'
             echo "python tools/qqtc.py promote $QQ_NAME --record - <<'JSON'"
@@ -145,9 +146,45 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat staged.json
       # Signed proof that this workflow, on main at this commit, produced this digest. The
-      # promotions gate verifies it; the revision annotation alone is only the pusher's word.
-      - uses: actions/attest-build-provenance@v4
+      # promotion-gate check verifies it; the revision annotation alone is only the pusher's word.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.push.outputs.repo }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  # Consumer repos install third-party dependencies, so they run last: on main only after
+  # publish has pushed and signed the bytes, so nothing they do can change what was published.
+  # The cost: a staged digest is promotable only if this job passed in the same run. Results
+  # combine across matrix legs, so one failed build or publish leg skips every consumer leg.
+  # Build packages (apt_packages) are deliberately not installed here, as in promotion-gate.
+  consumers:
+    needs: [plan, build, publish]
+    if: >-
+      !cancelled() && needs.build.result == 'success'
+      && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      QQ_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: actions/download-artifact@v8
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: out
+      - name: Build consumer repos with it
+        run: |
+          python tools/qqtc.py unpack out/*.tar.gz "$RUNNER_TEMP/root"
+          python tools/qqtc.py consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"
