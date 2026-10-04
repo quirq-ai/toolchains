@@ -54,7 +54,6 @@ Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) r
   `ghcr.io/quirq-ai/toolchains/node`. New packages start private, so until then `qq sync`, recipes
   and product-repo CI cannot pull the pins. Set it in each package's settings, under "Change
   visibility". Every new toolchain added here adds a package that needs the same step.
-- Name owners in `.github/CODEOWNERS`: the paths are listed there, the names are yours (V0-ORG-02).
 - Rulesets for `main` (V0-ORG-03, set up by the gate thread): required code-owner review, `ci`
   and `promotion-gate` required, and preferably `promotion-gate.yml` required as a workflow from
   `main`, so its check cannot be supplied by a PR, and a merge queue that merges one PR per
