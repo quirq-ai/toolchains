@@ -57,8 +57,13 @@ Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) r
 - Name owners in `.github/CODEOWNERS`: the paths are listed there, the names are yours (V0-ORG-02).
 - Rulesets for `main` (V0-ORG-03, set up by the gate thread): required code-owner review, `ci`
   and `promotion-gate` required, and preferably `promotion-gate.yml` required as a workflow from
-  `main`, so its check cannot be supplied by a PR. Until then nothing enforces the gate, and the
-  roller must not trust `promoted.toml` without re-verifying each pin.
+  `main`, so its check cannot be supplied by a PR, and a merge queue that merges one PR per
+  group. The workflow rules in `gate.py` narrow how a PR can fake the `promotion-gate` check but
+  cannot close it: someone with write access can still get a green check of that name onto a
+  PR's head from another branch's workflow, or post a status with a token. Only the required
+  workflow from `main` (or required code-owner review plus the roller re-verifying each pin)
+  closes that. Until then nothing enforces the gate, and the roller must not trust
+  `promoted.toml` without re-verifying each pin.
 
 ## Working here
 

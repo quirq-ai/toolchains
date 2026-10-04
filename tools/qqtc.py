@@ -225,7 +225,7 @@ def load_promoted(path: Path = PROMOTED, cfg: dict | None = None, spec_dir: Path
         entries[entry["name"]] = entry
     # Only qqtc's own rendering is accepted, so every TOML parser (the roller's included) reads
     # exactly the pins this one does: no comments, reordering or alternative spellings.
-    _require(path.read_text() == render_promoted(entries), where,
+    _require(path.read_bytes() == render_promoted(entries).encode(), where,
              "is not in canonical form; regenerate it with `qqtc promote` instead of editing by hand")
     return entries
 

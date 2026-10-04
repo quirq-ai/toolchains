@@ -167,11 +167,45 @@ def test_pin_must_match_the_spec(repo):
     # no top-level permissions: the repo default applies
     "name: x\non: pull_request\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps: [{run: 'true'}]\n",
     "not: [valid\n",
+    # permissions present but empty, so the repo default applies
+    "name: x\non: pull_request\npermissions:\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps: [{run: 'true'}]\n",
+    # a duplicate key would otherwise let the last one win
+    "name: x\non: pull_request\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps: [{run: 'true'}]\n  a:\n    name: promotion-gate\n    runs-on: ubuntu-24.04\n    steps: [{run: 'true'}]\n",
 ])
-def test_workflow_that_could_fake_the_gate_is_refused(repo, yml):
+@pytest.mark.parametrize("fname", ["sneaky.yml", "sneaky.YML", "sub/sneaky.Yaml"])
+def test_workflow_that_could_fake_the_gate_is_refused(repo, yml, fname):
     branch(repo)
-    head = commit(repo, {".github/workflows/sneaky.yml": yml})
+    head = commit(repo, {f".github/workflows/{fname}": yml})
     with pytest.raises(gate.GateError, match="workflow rules broken"):
+        run_prepare(repo, head)
+
+
+def test_gate_triggers_declared_twice_is_refused(repo):
+    branch(repo)
+    yml = GATE_YML.replace("\non:\n", '\n"on": {push: {branches: [main]}}\non:\n', 1)
+    assert yml != GATE_YML
+    head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
+    with pytest.raises(gate.GateError, match="twice|duplicate"):
+        run_prepare(repo, head)
+
+
+def test_lone_carriage_returns_are_not_canonical(repo):
+    branch(repo)
+    text = qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})
+    head = commit(repo, {"promoted.toml": text.replace("\n[[toolchain]]", "\r[[toolchain]]")})
+    with pytest.raises(qqtc.SpecError):
+        run_prepare(repo, head)
+
+
+def test_merge_inside_the_pr_cannot_hide_a_change(repo):
+    """The file list comes from what lands, not from the PR's own diff."""
+    branch(repo, "side")
+    commit(repo, {"tools/qqtc.py": "# replaced\n"})
+    sh(repo, "checkout", "-q", "main")
+    branch(repo)
+    sh(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "m", "side")
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})})
+    with pytest.raises(gate.GateError, match="tools/qqtc.py"):
         run_prepare(repo, head)
 
 
@@ -220,7 +254,7 @@ def test_push_with_unknown_before_fails_closed(repo):
 
 
 def test_this_repos_workflows_pass_the_rules():
-    wf = {f".github/workflows/{p.name}": p.read_text() for p in (ROOT / ".github/workflows").glob("*.yml")}
+    wf = {f".github/workflows/{p.name}": p.read_bytes() for p in (ROOT / ".github/workflows").glob("*.yml")}
     assert gate.workflow_problems(wf) == []
 
 
@@ -230,6 +264,6 @@ def test_error_output_cannot_start_a_workflow_command(capsys, tmp_path):
     (d / "promotion-gate.yml").write_text(GATE_YML)
     (d / "x.yml").write_text("name: x\non: push\njobs: {}\n")
     assert gate.main(["check-workflows", str(d)]) == 1
-    out = capsys.readouterr().out.splitlines()
+    out = capsys.readouterr().err.splitlines()
     assert out[0].startswith("::error::")
     assert all(line.startswith("- ") for line in out[1:])

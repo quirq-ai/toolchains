@@ -60,15 +60,15 @@ def git(repo: Path, *args: str) -> str:
     return r.stdout
 
 
-def show(repo: Path, ref: str, path: str) -> str | None:
-    """A file's text at ref, or None when it does not exist there."""
-    r = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=repo, capture_output=True, text=True)
+def show(repo: Path, ref: str, path: str) -> bytes | None:
+    """A file's exact bytes at ref, or None when it does not exist there."""
+    r = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=repo, capture_output=True)
     return r.stdout if r.returncode == 0 else None
 
 
-def changed_files(repo: Path, a: str, b: str, merge_base: bool) -> list[str]:
-    spec = f"{a}...{b}" if merge_base else f"{a}..{b}"
-    return [f for f in git(repo, "diff", "--no-renames", "--name-only", "-z", spec).split("\0") if f]
+def changed_files(repo: Path, a: str, b: str) -> list[str]:
+    """Paths that differ between two commits or trees: what landing b on a changes."""
+    return [f for f in git(repo, "diff", "--no-renames", "--name-only", "-z", a, b).split("\0") if f]
 
 
 def merged_tree(repo: Path, trusted: str, head: str) -> str:
@@ -92,6 +92,23 @@ def _triggers(doc: dict):
     return doc.get("on", doc.get(True))
 
 
+def _load_yaml(text: str):
+    """safe_load, but a duplicate key is an error instead of the last one silently winning."""
+    import yaml
+
+    class Strict(yaml.SafeLoader):
+        pass
+
+    def mapping(loader, node, deep=False):
+        keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+        if len(keys) != len(set(map(repr, keys))):
+            raise yaml.constructor.ConstructorError(None, None, "duplicate key", node.start_mark)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    return yaml.load(text, Loader=Strict)
+
+
 def _risky_permissions(doc: dict):
     """(where, what) for each grant that lets a token write check runs or commit statuses."""
     scopes = [("the workflow", doc.get("permissions"))]
@@ -107,8 +124,8 @@ def _risky_permissions(doc: dict):
                     yield where, f"{scope}: {perms.get(scope)}"
 
 
-def workflow_problems(workflows: dict[str, str]) -> list[str]:
-    """Problems with the workflow files {path: text}."""
+def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
+    """Problems with the workflow files {path: bytes}."""
     import yaml  # only needed here, so qqtc and the other commands stay standard library
 
     problems = []
@@ -116,7 +133,10 @@ def workflow_problems(workflows: dict[str, str]) -> list[str]:
         problems.append(f"{GATE_WORKFLOW} must not be removed or renamed")
     for path, text in sorted(workflows.items()):
         try:
-            doc = yaml.safe_load(text)
+            doc = _load_yaml(text.decode("utf-8"))
+        except UnicodeDecodeError:
+            problems.append(f"{path}: not UTF-8")
+            continue
         except yaml.YAMLError as e:
             problems.append(f"{path}: not valid YAML ({e.__class__.__name__})")
             continue
@@ -126,8 +146,11 @@ def workflow_problems(workflows: dict[str, str]) -> list[str]:
         if path == GATE_WORKFLOW and _triggers(doc) != GATE_TRIGGERS:
             problems.append(f"{path}: its triggers differ from gate.py's GATE_TRIGGERS; a change to "
                             "when the gate runs needs an owner and lands outside the gate")
-        if "permissions" not in doc:
-            problems.append(f"{path}: must declare top-level permissions (the repo default may allow writes)")
+        if "on" in doc and True in doc:
+            problems.append(f"{path}: declares its triggers twice (`on` and \"on\")")
+        if not (isinstance(doc.get("permissions"), dict) or doc.get("permissions") == "read-all"):
+            problems.append(f"{path}: must declare top-level permissions as a mapping or read-all "
+                            "(the repo default may allow writes)")
         problems += [f"{path}: {where} grants {what}; a workflow could then post its own "
                      f"{GATE_JOB} check or status" for where, what in _risky_permissions(doc)]
         jobs = doc.get("jobs") or {}
@@ -146,12 +169,12 @@ def workflow_problems(workflows: dict[str, str]) -> list[str]:
     return problems
 
 
-def workflows_at(repo: Path, ref: str) -> dict[str, str]:
+def workflows_at(repo: Path, ref: str) -> dict[str, bytes]:
     out = {}
     listing = git(repo, "ls-tree", "-r", "-z", "--name-only", ref, "--", ".github/workflows/")
     for path in filter(None, listing.split("\0")):
-        if path.endswith((".yml", ".yaml")):
-            out[path] = show(repo, ref, path) or ""
+        if path.lower().endswith((".yml", ".yaml")):
+            out[path] = show(repo, ref, path) or b""
     return out
 
 
@@ -160,7 +183,9 @@ def prepare(repo: Path, event: str, base: str, head: str, trusted: str, gate: Pa
     if event in PR_EVENTS:
         new_ref = merged_tree(repo, trusted, head)
         old_ref = trusted
-        files = changed_files(repo, trusted, head, merge_base=True)
+        # What actually lands, not the PR's own diff: a merge commit inside the PR cannot hide
+        # a change that the merge brings in.
+        files = changed_files(repo, trusted, new_ref)
         if "promoted.toml" in files:
             other = set(files) - PROMOTION_FILES
             if other:
@@ -168,7 +193,10 @@ def prepare(repo: Path, event: str, base: str, head: str, trusted: str, gate: Pa
                                 "README.md. Move these to their own PR:\n" + _listing(other))
     elif event == "merge_group":
         new_ref, old_ref = head, base
-        files = changed_files(repo, base, head, merge_base=False)
+        # Defence in depth only: the queue runs the merge result's copy of this workflow, so a
+        # group that guts the gate never reaches this line. Required review of .github/ and a
+        # queue that merges one PR per group are what make it hold.
+        files = changed_files(repo, base, head)
         if "promoted.toml" in files and any(f.startswith(".github/") for f in files):
             raise GateError("this merge group changes promoted.toml and .github/ together; "
                             "merge the gate change and the promotion in separate groups")
@@ -184,9 +212,9 @@ def prepare(repo: Path, event: str, base: str, head: str, trusted: str, gate: Pa
             raise GateError("workflow rules broken:\n" + _listing(problems))
 
     out.mkdir(parents=True, exist_ok=True)
-    (gate / "promoted.toml").write_text(show(repo, new_ref, "promoted.toml") or "")
+    (gate / "promoted.toml").write_bytes(show(repo, new_ref, "promoted.toml") or b"")
     base_toml = out / "base.toml"
-    base_toml.write_text(show(repo, old_ref, "promoted.toml") or "")
+    base_toml.write_bytes(show(repo, old_ref, "promoted.toml") or b"")
     changed = qqtc.promoted_changed(base_toml, gate / "promoted.toml", gate / "toolchains")
     return {"changed": changed, "merged": new_ref}
 
@@ -207,16 +235,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(prepare(Path.cwd(), args.event, args.base, args.head, args.trusted,
                                      args.gate, args.out)))
         else:
-            wf = {f".github/workflows/{p.name}": p.read_text()
-                  for p in sorted(args.dir.iterdir()) if p.suffix in (".yml", ".yaml")}
+            wf = {f".github/workflows/{p.name}": p.read_bytes()
+                  for p in sorted(args.dir.iterdir()) if p.suffix.lower() in (".yml", ".yaml")}
             problems = workflow_problems(wf)
             if problems:
                 raise GateError("workflow rules broken:\n" + _listing(problems))
             print("PASS")
     except (GateError, qqtc.SpecError) as e:
+        # stderr, so the reason reaches the log even when stdout is captured as the plan.
         lines = str(e).splitlines()
-        print(f"::error::{lines[0]}")
-        print("\n".join(lines[1:]))
+        print(f"::error::{lines[0]}", file=sys.stderr)
+        if lines[1:]:
+            print("\n".join(lines[1:]), file=sys.stderr)
+        return 1
+    except Exception as e:  # fail closed, but with a readable reason instead of a traceback
+        print(f"::error::gate internal error: {e.__class__.__name__}", file=sys.stderr)
         return 1
     return 0
 

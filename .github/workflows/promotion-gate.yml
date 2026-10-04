@@ -11,8 +11,9 @@
 # define another check named promotion-gate, change this file's triggers, or can write check
 # runs or statuses.
 # In the merge queue the workflow file comes from the merge result, so the queue run is only as
-# safe as review of .github/: qqtc and the specs still come from the base commit, every Python
-# call runs isolated (-I), and a group may not change promoted.toml and .github/ together.
+# safe as review of .github/ and a queue that merges one PR per group: qqtc and the specs still
+# come from the base commit, every Python call runs isolated (-I), and a group may not change
+# promoted.toml and .github/ together (defence in depth: a group that guts this file skips it).
 # When run as an org "required workflow" (event pull_request, file from main) it behaves as on
 # pull_request_target, taking its tools from main.
 # After a push, main is the trust root and its own tools run.
@@ -72,7 +73,8 @@ jobs:
             *) tools=$HEAD ;;
           esac
           git worktree add --detach "$GATE" "$tools"
-          python -m pip install --quiet --no-deps --require-hashes -r "$GATE/tools/gate-requirements.txt"
+          # -I keeps the checkout off sys.path, so a pip/ directory in it cannot run here.
+          python -I -m pip install --quiet --no-deps --require-hashes -r "$GATE/tools/gate-requirements.txt"
 
           python -I "$GATE/tools/gate.py" prepare --event "$GITHUB_EVENT_NAME" --base "$BASE" \
             --head "$HEAD" --trusted "$tools" --gate "$GATE" --out "$RUNNER_TEMP" > "$RUNNER_TEMP/plan.json"
