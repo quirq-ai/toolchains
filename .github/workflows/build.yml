@@ -11,9 +11,14 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# PRs keep only the newest run. On main every commit gets its own group, so none is dropped
+# from staging when pushes land faster than a build.
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults:
+  run:
+    shell: bash   # -eo pipefail, so a failing command inside a pipe fails the step
 jobs:
   plan:
     runs-on: ubuntu-24.04
@@ -21,6 +26,8 @@ jobs:
       names: ${{ steps.list.outputs.names }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
@@ -35,25 +42,36 @@ jobs:
         name: ${{ fromJSON(needs.plan.outputs.names) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # No write permissions: this job runs build scripts and consumer repos' tests.
     permissions:
       contents: read
-      packages: write   # used only by the publish steps, which never run on pull requests
     env:
       QQ_NAME: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"   # runs qqtc only; the toolchain under test comes first on PATH
       - name: Install build packages
         run: |
-          pkgs=$(python tools/qqtc.py ci-config "$QQ_NAME" | jq -r '.apt_packages // [] | join(" ")')
+          python tools/qqtc.py ci-config "$QQ_NAME" > "$RUNNER_TEMP/ci-config.json"
+          pkgs=$(jq -r '.apt_packages // [] | join(" ")' "$RUNNER_TEMP/ci-config.json")
           if [ -n "$pkgs" ]; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends $pkgs
           fi
       - name: Build
         run: python tools/qqtc.py build "$QQ_NAME" --out out
+      # Keep the built bytes before anything else runs, so smoke and consumer code cannot
+      # change what gets published.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
       - name: Smoke test
         run: |
           python tools/qqtc.py unpack out/*.tar.gz "$RUNNER_TEMP/root"
@@ -61,19 +79,38 @@ jobs:
       - name: Build consumer repos with it
         run: python tools/qqtc.py consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"
 
-      - name: Set up ORAS
-        if: github.event_name != 'pull_request'
-        uses: oras-project/setup-oras@v2
+  publish:
+    needs: [plan, build]
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      QQ_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: out
+      - uses: oras-project/setup-oras@v2
       - name: Publish to staging
-        if: github.event_name != 'pull_request'
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          registry=$(python -c "import tomllib; print(tomllib.load(open('toolchains.toml','rb'))['github']['registry'])")
+          registry=$(python3 -c "import tomllib; print(tomllib.load(open('toolchains.toml','rb'))['github']['registry'])")
           record="out/$QQ_NAME.record.json"
           file=$(jq -r .file "$record")
+          echo "$(jq -r .layer_sha256 "$record")  out/$file" | sha256sum -c -
           tag="staging-$(jq -r '"\(.version)-r\(.revision)"' "$record")-${GITHUB_SHA::12}"
           repo="$registry/$QQ_NAME"
           echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$REGISTRY_USER" --password-stdin

@@ -23,6 +23,7 @@ import gzip
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -47,6 +48,8 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+APT_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]*$")
+FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
 class SpecError(Exception):
@@ -116,12 +119,21 @@ def load_spec(name: str, spec_dir: Path = SPEC_DIR) -> dict:
         _require(isinstance(src.get("sha256"), str) and SHA256_RE.match(src["sha256"]) is not None, w,
                  "sha256 must be 64 lowercase hex characters")
         fname = source_filename(src)
+        _require(FILENAME_RE.match(fname) is not None, w,
+                 f"source file name {fname!r} must be a plain file name (set `filename` if the URL has none)")
         _require(fname not in seen, w, f"two sources save to the same file {fname!r}")
         seen.add(fname)
 
     build = spec.get("build")
     _require(isinstance(build, dict), where, "missing [build] table")
     _check_keys(build, {"script", *BACKENDS}, f"{where} [build]")
+    gh = build.get("github", {})
+    w = f"{where} [build.github]"
+    _require(isinstance(gh, dict), w, "must be a table")
+    _check_keys(gh, {"apt_packages"}, w)
+    pkgs = gh.get("apt_packages", [])
+    _require(isinstance(pkgs, list) and all(isinstance(x, str) and APT_RE.match(x) for x in pkgs), w,
+             "apt_packages must be a list of Debian package names")
     script = build.get("script")
     _require(isinstance(script, str) and (spec_dir / name / script).is_file(), where,
              f"[build].script {script!r} must name a file in toolchains/{name}/")
@@ -221,7 +233,13 @@ def pack(tree: Path, out: Path) -> None:
             if ti.isreg():
                 with p.open("rb") as src:
                     tar.addfile(ti, src)
-            elif ti.isdir() or ti.issym() or ti.islnk():
+            elif ti.isdir():
+                tar.addfile(ti)
+            elif ti.issym() or ti.islnk():
+                base = posixpath.dirname(ti.name) if ti.issym() else ""
+                target = posixpath.normpath(posixpath.join(base, ti.linkname))
+                if ti.linkname.startswith("/") or target == ".." or target.startswith("../"):
+                    raise SpecError(f"{p}: link to {ti.linkname!r} points outside the toolchain")
                 tar.addfile(ti)
             else:
                 raise SpecError(f"{p}: only files, directories and links can be packed")
@@ -356,6 +374,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except subprocess.CalledProcessError as e:
         print(f"error: command failed with exit code {e.returncode}: {e.cmd}", file=sys.stderr)
+        return 1
+    except (tarfile.TarError, OSError) as e:
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     return 0
 

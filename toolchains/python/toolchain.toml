@@ -18,7 +18,6 @@ sha256 = "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73"
 [build]
 script = "build.sh"
 [build.github]
-runs_on = "ubuntu-24.04"
 apt_packages = [
   "build-essential", "pkg-config", "libssl-dev", "libffi-dev", "zlib1g-dev", "libbz2-dev",
   "liblzma-dev", "libsqlite3-dev", "libreadline-dev", "libncurses-dev", "libgdbm-dev",

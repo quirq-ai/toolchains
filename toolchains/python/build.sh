@@ -41,5 +41,13 @@ done
 
 # Bytecode that does not depend on file timestamps, so it stays valid after unpacking (tar
 # mtimes are fixed) and is the same on every build of the same sources.
+# PYTHONDONTWRITEBYTECODE keeps compileall's own imports from leaving timestamp .pyc files that
+# -f would otherwise race with; the check after it fails the build if any survive.
 find "lib/python$minor" -name __pycache__ -type d -prune -exec rm -rf {} +
-bin/python3 -m compileall -q -j0 --invalidation-mode unchecked-hash "lib/python$minor"
+PYTHONDONTWRITEBYTECODE=1 bin/python3 -m compileall -f -q -j0 --invalidation-mode unchecked-hash "lib/python$minor"
+PYTHONDONTWRITEBYTECODE=1 bin/python3 - "lib/python$minor" <<'PY'
+import pathlib, sys
+bad = [p for p in pathlib.Path(sys.argv[1]).rglob("*.pyc") if p.read_bytes()[4:8] != b"\x01\x00\x00\x00"]
+if bad:
+    sys.exit(f"{len(bad)} .pyc file(s) are not unchecked-hash, e.g. {bad[0]}")
+PY

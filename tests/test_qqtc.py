@@ -48,7 +48,7 @@ def write_spec(spec_dir: Path, name: str = "demo", body: str | None = None, scri
             [build]
             script = "build.sh"
             [build.github]
-            runs_on = "ubuntu-24.04"
+            apt_packages = ["build-essential"]
 
             [smoke]
             commands = ["bin/demo | grep -qx 'demo {{version}}'", "test -L bin/demo-alias"]
@@ -112,6 +112,11 @@ def test_valid_spec_loads(spec_dir):
         (PAYLOAD_SHA, "abc", "sha256"),
         ('script = "build.sh"', 'script = "missing.sh"', "script"),
         ("[smoke]", "[smoke]\nextra = 1", "unknown key"),
+        ('apt_packages = ["build-essential"]', 'apt_packages = ["x; rm -rf /"]', "Debian package"),
+        ('apt_packages = ["build-essential"]', 'runs_on = "ubuntu-24.04"', "unknown key"),
+        ('url = "https://example.invalid/demo-1.2.3.tar.gz"', 'url = "https://example.invalid/"', "plain file name"),
+        ('url = "https://example.invalid/demo-1.2.3.tar.gz"',
+         'url = "https://example.invalid/x"\nfilename = "../escape"', "plain file name"),
     ],
 )
 def test_invalid_spec_is_rejected(spec_dir, old, new, message):
@@ -180,6 +185,29 @@ def test_pack_unpack_round_trip(tmp_path):
     assert (out / "bin" / "alias").is_symlink()
     assert (out / "bin" / "tool").stat().st_mode & 0o111
     assert (out / "lib" / "data.txt").read_text() == "data\n"
+
+
+@pytest.mark.parametrize("target", ["/etc/passwd", "../../outside", "../.."])
+def test_pack_refuses_links_that_leave_the_tree(tmp_path, target):
+    tree = make_tree(tmp_path / "tree")
+    (tree / "lib" / "bad").symlink_to(target)
+    with pytest.raises(qqtc.SpecError, match="outside the toolchain"):
+        qqtc.pack(tree, tmp_path / "t.tar.gz")
+
+
+def test_pack_allows_links_within_the_tree(tmp_path):
+    tree = make_tree(tmp_path / "tree")
+    (tree / "lib" / "up").symlink_to("../bin/tool")
+    qqtc.pack(tree, tmp_path / "t.tar.gz")
+    qqtc.unpack(tmp_path / "t.tar.gz", tmp_path / "out")
+    assert (tmp_path / "out" / "lib" / "up").resolve() == (tmp_path / "out" / "bin" / "tool").resolve()
+
+
+def test_cli_reports_a_bad_tarball_without_a_traceback(tmp_path, capsys):
+    bad = tmp_path / "bad.tar.gz"
+    bad.write_bytes(b"not a tarball")
+    assert qqtc.main(["unpack", str(bad), str(tmp_path / "out")]) == 1
+    assert capsys.readouterr().err.startswith("error:")
 
 
 def test_unpack_refuses_paths_outside_dest(tmp_path):
