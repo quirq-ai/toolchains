@@ -90,7 +90,7 @@ def branch(repo: Path, name: str = "pr", start: str = "main") -> None:
     sh(repo, "checkout", "-q", "-b", name, start)
 
 
-def run_prepare(repo: Path, head: str, event: str = "pull_request_target", base: str | None = None):
+def run_prepare(repo: Path, head: str, event: str = "pull_request", base: str | None = None):
     main = sh(repo, "rev-parse", "main")
     gate_dir = repo.parent / f"gate-{head[:8]}-{event}"
     if not gate_dir.exists():
@@ -215,7 +215,7 @@ def test_merge_inside_the_pr_cannot_hide_a_change(repo):
 
 def test_changing_the_gate_triggers_is_refused(repo):
     branch(repo)
-    yml = GATE_YML.replace("  merge_group:\n", "  merge_group:\n  pull_request:\n")
+    yml = GATE_YML.replace("  merge_group:\n", "  pull_request_target:\n  merge_group:\n")
     assert yml != GATE_YML
     head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
     with pytest.raises(gate.GateError, match="triggers differ"):
@@ -266,6 +266,13 @@ def test_every_gate_job_needs_a_timeout(repo, job):
     head = commit(repo, {".github/workflows/promotion-gate.yml": GATE_YML + job})
     with pytest.raises(gate.GateError, match="job 'second'"):
         run_prepare(repo, head)
+
+
+def test_pull_request_target_is_no_longer_a_gate_event(repo):
+    branch(repo)
+    head = commit(repo, {"README.md": "changed\n"})
+    with pytest.raises(gate.GateError, match="unexpected event"):
+        run_prepare(repo, head, event="pull_request_target")
 
 
 def test_removing_the_gate_workflow_is_refused(repo):

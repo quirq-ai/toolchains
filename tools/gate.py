@@ -14,8 +14,8 @@ of git as data; nothing from that change is imported or run.
         minutes, and that no workflow can write check runs or statuses
 
 Rules, by event:
-- A PR (pull_request_target, or pull_request when this runs as an org ruleset workflow) is judged
-  against main's tip and by what will actually merge (git merge-tree). A PR that changes
+- A PR (pull_request) is judged against main's tip and by what will actually merge
+  (git merge-tree). A PR that changes
   promoted.toml may change nothing else except README.md. Its workflows must not define another
   check named promotion-gate or change the gate's triggers.
 - In the merge queue, a group may not change promoted.toml and .github/ together, and the same
@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qqtc  # noqa: E402
 
-PR_EVENTS = ("pull_request_target", "pull_request")
+PR_EVENTS = ("pull_request",)
 PROMOTION_FILES = {"promoted.toml", "README.md"}
 GATE_WORKFLOW = ".github/workflows/promotion-gate.yml"
 GATE_JOB = "promotion-gate"
@@ -45,8 +45,8 @@ GATE_TIMEOUT = 40  # minutes; the merge queue's admission limit (quirq-ai/gate, 
 # When the gate runs. A PR cannot change this: the trusted copy of this constant judges it, so a
 # change to the triggers needs an owner to land it outside the gate.
 GATE_TRIGGERS = {
-    "pull_request_target": {"branches": ["main"], "types": ["opened", "synchronize", "reopened", "edited"]},
-    "merge_group": None,
+    "pull_request": {"branches": ["main"], "types": ["opened", "synchronize", "reopened", "edited"]},
+    "merge_group": {"types": ["checks_requested"]},
     "push": {"branches": ["main"]},
 }
 
