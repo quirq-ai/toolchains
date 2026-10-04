@@ -1,0 +1,49 @@
+# CPython built from the python.org source release (V0-TCH-01).
+# To move to a new release: change `version` and the source URL and sha256, reset `revision` to 1.
+# To rebuild the same release (a build-script change): bump `revision`.
+
+[toolchain]
+name = "python"
+version = "3.14.8"        # latest stable on 2026-10-03; 3.15.0 is due 2026-10-09 (PEP 790)
+revision = 1
+platform = "linux-x86_64"
+description = "CPython, built by CI from the python.org source release."
+
+[[source]]
+url = "https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+# TODO(expert): verify the release's Sigstore signature when the pin changes, not only its sha256.
+
+[build]
+script = "build.sh"
+[build.github]
+runs_on = "ubuntu-24.04"
+apt_packages = [
+  "build-essential", "pkg-config", "libssl-dev", "libffi-dev", "zlib1g-dev", "libbz2-dev",
+  "liblzma-dev", "libsqlite3-dev", "libreadline-dev", "libncurses-dev", "libgdbm-dev",
+  "libgdbm-compat-dev", "uuid-dev", "libzstd-dev",
+]
+# TODO(expert): the result links the runner's shared libraries (OpenSSL, libffi, ...). Hermetic
+# builds (static deps, or a container toolchain in v1) remove that host dependency.
+
+[smoke]
+# Run from the unpacked toolchain root. {version} is replaced with the toolchain version.
+commands = [
+  "bin/python3 -c \"import sys; v = '.'.join(map(str, sys.version_info[:3])); assert v == '{version}', v\"",
+  "bin/python3 -c 'import ssl, sqlite3, zlib, lzma, bz2, ctypes, readline, uuid, decimal, hashlib, compression.zstd; print(ssl.OPENSSL_VERSION)'",
+  "bin/python3 -m pip --version",
+  "bin/pip3 --version",
+  "bin/python3 -m venv --without-pip venv-smoke && venv-smoke/bin/python -c 'import sys; print(sys.prefix)'",
+]
+
+# A consumer is a product repo built with this toolchain, at a pinned commit. It is how CI shows
+# the done-when "xo-space builds with it". Move `commit` deliberately, like any pin.
+[[consumer]]
+repo = "https://github.com/quirq-ai/xo-space"
+commit = "c3cea98c8e70479b1f0cb8f871e28f8f6ee5a4f6"
+commands = [
+  "python3 -m venv venv",
+  "venv/bin/python -m pip install --quiet -r requirements.txt -r requirements-dev.txt",
+  "venv/bin/python -m pytest -q -p no:cacheprovider",
+  "venv/bin/python scripts/check_route_parity.py",
+]
