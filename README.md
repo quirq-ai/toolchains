@@ -24,7 +24,7 @@ Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-TCH-01 | Python toolchain (CPython 3.14.x) | | not started |
+| V0-TCH-01 | Python toolchain (CPython 3.14.x) | #2 | in review |
 | V0-TCH-02 | Node.js 24 LTS and pnpm toolchain | | not started |
 | V0-TCH-03 | Staging and promotion | | not started |
 
