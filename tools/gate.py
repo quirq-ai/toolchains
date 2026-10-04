@@ -41,7 +41,7 @@ PR_EVENTS = ("pull_request_target", "pull_request")
 PROMOTION_FILES = {"promoted.toml", "README.md"}
 GATE_WORKFLOW = ".github/workflows/promotion-gate.yml"
 GATE_JOB = "promotion-gate"
-GATE_TIMEOUT = 40  # minutes; the merge queue's admission limit for a required check (gate.toml)
+GATE_TIMEOUT = 40  # minutes; the merge queue's admission limit (quirq-ai/gate, gate.toml)
 # When the gate runs. A PR cannot change this: the trusted copy of this constant judges it, so a
 # change to the triggers needs an owner to land it outside the gate.
 GATE_TRIGGERS = {
@@ -117,11 +117,22 @@ def _has_concurrency(doc: dict) -> bool:
     return "concurrency" in doc or any(isinstance(j, dict) and "concurrency" in j for j in jobs)
 
 
-def _slow_jobs(doc: dict) -> list:
+def _timeout_problems(doc: dict) -> list[str]:
+    """Why each gate job could outlive the merge queue's limit, as (job, what was found)."""
     jobs = doc.get("jobs")
-    jobs = jobs.items() if isinstance(jobs, dict) else []
-    return [j for j, job in jobs if not isinstance(job, dict)
-            or type(job.get("timeout-minutes")) is not int or not 0 < job["timeout-minutes"] <= GATE_TIMEOUT]
+    out = []
+    for j, job in (jobs.items() if isinstance(jobs, dict) else []):
+        if not isinstance(job, dict):
+            continue  # reported as a malformed job elsewhere
+        if "uses" in job:
+            out.append(f"job {j!r} calls a reusable workflow, which cannot set timeout-minutes; "
+                       "run the steps in this file instead")
+            continue
+        t = job.get("timeout-minutes")
+        if type(t) is not int or not 0 < t <= GATE_TIMEOUT:
+            out.append(f"job {j!r} must set timeout-minutes to an integer from 1 to {GATE_TIMEOUT} "
+                       f"(got {t!r}); the merge queue drops an entry whose check has not reported by then")
+    return out
 
 
 def _risky_permissions(doc: dict):
@@ -170,9 +181,7 @@ def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
             problems.append(f"{path}: must not set concurrency; as a required ruleset workflow a "
                             "cancelled run blocks the PR until someone re-runs it")
         if path == GATE_WORKFLOW:
-            problems += [f"{path}: job {j!r} must set timeout-minutes to at most {GATE_TIMEOUT}; "
-                         "the merge queue drops an entry whose check has not reported by then"
-                         for j in _slow_jobs(doc)]
+            problems += [f"{path}: {p}" for p in _timeout_problems(doc)]
         if "on" in doc and True in doc:
             problems.append(f"{path}: declares its triggers twice (`on` and \"on\")")
         if not (isinstance(doc.get("permissions"), dict) or doc.get("permissions") == "read-all"):
