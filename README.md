@@ -25,10 +25,14 @@ digest, never by a moving version.
    and prints a ready-made record in the run summary. Staging happens before the consumer builds
    run, so a staged digest is promotable only if that run's `consumers` job is green.
 3. Promote it in its own PR: `python tools/qqtc.py promote <name> --record staged.json`, which
-   rewrites `promoted.toml`. That PR may change only `promoted.toml` and `README.md`. The
-   `promotion-gate` check pulls the digest, checks that a staging build of a commit on `main`
-   produced exactly those bytes, and re-runs the smoke tests and consumer builds on them. It runs
-   main's workflow, `qqtc` and specs, never the PR's (not yet a required check: V0-ORG-03). A reviewer approves; then it merges.
+   rewrites `promoted.toml` in its one canonical form (hand edits are refused). That PR may change
+   only `promoted.toml` and `README.md`. The `promotion-gate` check pulls the digest, checks that
+   a staging build of a commit on `main` produced exactly those bytes, and re-runs the smoke tests
+   and consumer builds on them. It runs main's workflow, `qqtc` and `gate.py`, never the PR's,
+   and judges what will actually merge. On every PR it also refuses workflows that could fake
+   it: another check named `promotion-gate`, changed gate triggers, or a token that can write
+   checks or statuses (`tools/gate.py`). A reviewer approves; then it merges. The check is
+   advisory until the rulesets land (V0-ORG-03).
 4. The toolchain roller (quirq-ai/rollers, V0-ROL-01) reads `promoted.toml` and opens pin-update
    PRs in product repos.
 
@@ -50,10 +54,11 @@ Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) r
   `ghcr.io/quirq-ai/toolchains/node`. New packages start private, so until then `qq sync`, recipes
   and product-repo CI cannot pull the pins. Set it in each package's settings, under "Change
   visibility". Every new toolchain added here adds a package that needs the same step.
-- Make `ci` and `promotion-gate` required checks on `main`, with the merge queue (V0-ORG-03).
-  Until then nothing enforces that a promoted pin passed its consumer builds.
-- Name owners for `.github/`, `tools/`, `toolchains/` and `promoted.toml`, with required code-owner
-  review (V0-ORG-02).
+- Name owners in `.github/CODEOWNERS`: the paths are listed there, the names are yours (V0-ORG-02).
+- Rulesets for `main` (V0-ORG-03, set up by the gate thread): required code-owner review, `ci`
+  and `promotion-gate` required, and preferably `promotion-gate.yml` required as a workflow from
+  `main`, so its check cannot be supplied by a PR. Until then nothing enforces the gate, and the
+  roller must not trust `promoted.toml` without re-verifying each pin.
 
 ## Working here
 

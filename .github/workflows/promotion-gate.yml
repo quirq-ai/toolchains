@@ -1,24 +1,29 @@
 # The gate for toolchain pins: every new or moved entry in promoted.toml must be bytes that
 # build.yml, running on main, signed provenance for. Its manifest must be the one-layer shape
-# qq sync expects, and the spec at that commit must match the pin's version. The pulled bytes
-# must also pass the smoke tests and consumer builds again.
+# qq sync expects, and the spec at that commit and in the merge result must match the pin's
+# version. The pulled bytes must also pass the smoke tests and consumer builds again.
 #
 # A promotion PR must not be able to weaken its own check. So on PRs into main this runs as
-# pull_request_target: the workflow, qqtc and the toolchain specs all come from main's tip. The
-# PR's files are read only as data and no code from the PR runs. A PR that changes promoted.toml
-# may change nothing else except README.md, so a change to the gate itself always arrives in its
-# own PR.
-# In the merge queue the workflow file comes from the merge result, but qqtc and the specs still
-# come from the base commit and every Python call runs isolated (-I), so files in the checkout
-# cannot shadow modules. After a push, main is the trust root and its own tools run.
-# TODO(suraj): nothing requires this check yet. Make `promotion-gate` a required check next to
-# `ci`, for PRs and the merge queue, and give .github/, tools/, toolchains/ and promoted.toml
-# owners with required review (V0-ORG-02, V0-ORG-03). Until then the gate is advisory and a
-# change to this file is guarded only by review.
+# pull_request_target (also on `edited`, so retargeting a PR to main runs it): the workflow, qqtc
+# and the toolchain specs all come from main's tip, and the PR's files are read only as data from
+# git. tools/gate.py applies the rules: it judges what will actually merge, refuses a promotion
+# PR that changes anything except promoted.toml and README.md, and refuses any PR whose workflows
+# define another check named promotion-gate, change this file's triggers, or can write check
+# runs or statuses.
+# In the merge queue the workflow file comes from the merge result, so the queue run is only as
+# safe as review of .github/: qqtc and the specs still come from the base commit, every Python
+# call runs isolated (-I), and a group may not change promoted.toml and .github/ together.
+# When run as an org "required workflow" (event pull_request, file from main) it behaves as on
+# pull_request_target, taking its tools from main.
+# After a push, main is the trust root and its own tools run.
+# TODO(suraj): nothing requires this check yet. Required code-owner review of .github/, tools/,
+# toolchains/ and promoted.toml, and requiring this workflow from main (V0-ORG-02, V0-ORG-03, set
+# up by the gate thread), are what make it binding. Until then the gate is advisory.
 name: promotion-gate
 on:
   pull_request_target:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
   merge_group:
   push:
     branches: [main]
@@ -54,40 +59,26 @@ jobs:
       - name: Load trusted tools and the proposed pins
         id: changed
         run: |
-          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "::error::cannot find the base commit '$BASE' to compare promoted.toml against"
-            exit 1
-          fi
           # The PR's commits, as data only (a fork's commits are not in this repo's branches).
           [ -n "$PR" ] && git fetch --no-tags --quiet origin "$HEAD"
 
-          # Before a merge, trusted tools judge the change: main's tip for a PR (the commit this
-          # workflow came from), the queue's base commit in the merge queue. After a push, main is
-          # the trust root, so its own tools do.
+          # Trusted tools judge the change: main's tip for a PR (on pull_request_target, the commit
+          # this workflow came from), the queue's base commit in the merge queue, and main itself
+          # after a push.
           case "$GITHUB_EVENT_NAME" in
-            pull_request_target)
-              tools=$GITHUB_SHA
-              git merge-base --is-ancestor "$BASE" "$tools" || { echo "::error::PR base $BASE is not on main"; exit 1; } ;;
+            pull_request_target) tools=$GITHUB_SHA ;;
+            pull_request) tools=$(git rev-parse refs/remotes/origin/main) ;;
             merge_group) tools=$BASE ;;
             *) tools=$HEAD ;;
           esac
           git worktree add --detach "$GATE" "$tools"
+          python -m pip install --quiet --no-deps --require-hashes -r "$GATE/tools/gate-requirements.txt"
 
-          git show "$HEAD:promoted.toml" > "$GATE/promoted.toml" 2>/dev/null || : > "$GATE/promoted.toml"
-          git show "$BASE:promoted.toml" > "$RUNNER_TEMP/base.toml" 2>/dev/null || : > "$RUNNER_TEMP/base.toml"
-
-          if [ -n "$PR" ] && ! cmp -s "$GATE/promoted.toml" "$RUNNER_TEMP/base.toml"; then
-            files=$(git diff --no-renames --name-only "$BASE...$HEAD")   # a failure here fails the step
-            other=$(grep -vxE 'promoted\.toml|README\.md' <<<"$files" || true)
-            if [ -n "$other" ]; then
-              echo "::error::a PR that changes promoted.toml may change only promoted.toml and README.md. Move these to their own PR:"
-              sed 's/^/  /' <<<"$other"   # indented, so a file name cannot act as a workflow command
-              exit 1
-            fi
-          fi
-
-          python -I "$GATE/tools/qqtc.py" promoted-changed --base "$RUNNER_TEMP/base.toml" > "$RUNNER_TEMP/changed.json"
+          python -I "$GATE/tools/gate.py" prepare --event "$GITHUB_EVENT_NAME" --base "$BASE" \
+            --head "$HEAD" --trusted "$tools" --gate "$GATE" --out "$RUNNER_TEMP" > "$RUNNER_TEMP/plan.json"
+          jq .changed "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/changed.json"
           cat "$RUNNER_TEMP/changed.json"
+          echo "merged=$(jq -r .merged "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
           echo "count=$(jq length "$RUNNER_TEMP/changed.json")" >> "$GITHUB_OUTPUT"
       - name: Set up ORAS
         if: steps.changed.outputs.count != '0'
@@ -95,6 +86,7 @@ jobs:
       - name: Pull and check each new pin
         if: steps.changed.outputs.count != '0'
         env:
+          MERGED: ${{ steps.changed.outputs.merged }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -116,10 +108,9 @@ jobs:
               || fail "no build provenance from build.yml on main at $built_from for this digest"
 
             # 2. The spec at that commit describes the version the pin claims.
-            #    In the merge queue, also the merged spec, so a spec change batched with the
-            #    promotion cannot land a pin that main's push run then rejects. Specs are data here.
-            specs=("$built_from")
-            [ "$GITHUB_EVENT_NAME" = merge_group ] && specs+=("$HEAD")
+            #    And the spec in what will merge, so a spec change merged alongside the promotion
+            #    cannot land a pin that main's push run then rejects. Specs are data here.
+            specs=("$built_from" "$MERGED")
             for at in "${specs[@]}"; do
               git show "$at:toolchains/$name/toolchain.toml" > "$RUNNER_TEMP/spec-$name.toml" \
                 || fail "toolchains/$name/toolchain.toml does not exist at $at"
