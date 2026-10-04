@@ -1,0 +1,50 @@
+# Node.js LTS plus pnpm (V0-TCH-02). Next.js 16 runs on Node 24, the current LTS line.
+# Node is repackaged from the official nodejs.org Linux binary, the way Chromium's 3pp
+# repackages upstream binaries; pnpm is the npm registry tarball, unpacked into the toolchain.
+# To move either: change its version and URL, take sha256 from the upstream checksums
+# (nodejs.org SHASUMS256.txt; for pnpm, verify the npm `integrity` value), reset `revision` to 1.
+
+[toolchain]
+name = "node"
+version = "24.21.0"       # latest 24.x LTS ("Krypton") on 2026-10-04
+revision = 1
+platform = "linux-x86_64"
+description = "Node.js 24 LTS (official binary) with pnpm 11.28.2."
+
+[[source]]
+url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz"
+sha256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
+
+[[source]]
+url = "https://registry.npmjs.org/pnpm/-/pnpm-11.28.2.tgz"
+sha256 = "30d4099fa03b9ba1124d81527808b1e4d8e719aeb0ddfe169426df3c4a038a5f"
+# Matches the registry integrity sha512-dVzi/jwF...OFdJw== (checked 2026-10-04).
+# pnpm 11 is the newest pure-JavaScript line. TODO(expert): pnpm 12 ships a per-platform
+# native binary through optional dependencies; packaging it needs the linux-x64 binary as a
+# second source, and innernet should declare `packageManager` first.
+
+[build]
+script = "build.sh"
+[build.github]
+
+[smoke]
+commands = [
+  "test \"$(bin/node --version)\" = v{version}",
+  "test \"$(bin/pnpm --version)\" = 11.28.2",
+  "bin/npm --version",
+  "bin/node -e 'require(\"node:crypto\").createHash(\"sha256\"); console.log(process.versions.openssl)'",
+]
+
+# innernet builds with it: install from the lockfile, typecheck, production build.
+# pnpm 11 fails an install whose dependencies have unapproved build scripts (innernet has one:
+# esbuild, via tsx). The flag keeps pnpm 10's behaviour of skipping them with a warning.
+# TODO(expert): innernet lists its approved builds (allowBuilds in pnpm-workspace.yaml), then
+# drop the flag.
+[[consumer]]
+repo = "https://github.com/quirq-ai/innernet"
+commit = "da9b84cf811f4358e3ee0b5d9d4388b69bf481e9"
+commands = [
+  "pnpm install --frozen-lockfile --config.strict-dep-builds=false",
+  "pnpm typecheck",
+  "pnpm build",
+]
