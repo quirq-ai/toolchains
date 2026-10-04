@@ -11,7 +11,8 @@ description = "CPython, built by CI from the python.org source release."
 
 [[source]]
 url = "https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73"
+# Taken from a CI download over TLS from python.org on 2026-10-04.
 # TODO(expert): verify the release's Sigstore signature when the pin changes, not only its sha256.
 
 [build]
