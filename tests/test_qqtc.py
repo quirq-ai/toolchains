@@ -83,8 +83,8 @@ def test_repo_specs_are_valid():
     assert qqtc.validate() == []
 
 
-def test_repo_lists_python():
-    assert "python" in qqtc.toolchain_names()
+def test_repo_lists_python_and_node():
+    assert {"python", "node"} <= set(qqtc.toolchain_names())
 
 
 def test_repo_consumers_are_pinned():
