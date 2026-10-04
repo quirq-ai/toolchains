@@ -55,13 +55,16 @@ Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) r
   `ghcr.io/quirq-ai/toolchains/node`. New packages start private, so until then `qq sync`, recipes
   and product-repo CI cannot pull the pins. Set it in each package's settings, under "Change
   visibility". Every new toolchain added here adds a package that needs the same step.
-- Apply the toolchains ruleset from quirq-ai/gate (V0-ORG-03): required code-owner review, `ci`
-  and `promotion-gate` required, and a merge queue that merges one PR per group. On GitHub Free
-  there is no org-required workflow, so the `promotion-gate` workflow file comes from the PR: a
-  PR that edits `.github/` or `tools/` can change what the gate runs, and only your code-owner
-  review of those paths stops that. The workflow rules in `gate.py` narrow other ways to fake the
-  check but cannot close them all (someone with write access can still post a status with a
-  token), so the roller should re-verify each pin rather than trust `promoted.toml` alone.
+- Apply the toolchains ruleset from quirq-ai/gate (V0-ORG-03): required code-owner review that
+  dismisses stale approvals and requires approval of the most recent push, `ci` and
+  `promotion-gate` required, and a merge queue that merges one PR per group. On GitHub Free there
+  is no org-required workflow, so the `promotion-gate` workflow file comes from the PR: a PR that
+  edits `.github/` or `tools/` can change what the gate runs, and only your code-owner review of
+  those paths (on the latest push) stops that. The workflow rules in `gate.py` cannot close every
+  way to fake the check: anyone with write access can push a branch, with no PR and no review,
+  whose workflow has `checks: write` and posts a green `promotion-gate` check on any commit, or
+  post a status with a token. So the roller must re-verify each pin rather than trust
+  `promoted.toml` alone.
 
 ## Working here
 

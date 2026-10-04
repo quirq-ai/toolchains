@@ -10,7 +10,7 @@
 #   main's tip, and the PR's files are read only as data from git. tools/gate.py judges what will
 #   actually merge, refuses a promotion PR that changes anything except promoted.toml and
 #   README.md, and refuses any PR whose workflows define another check named promotion-gate,
-#   change this file's triggers, set concurrency, time out after 40 minutes or can write check runs
+#   change this file's triggers, set concurrency, allow more than 40 minutes or can write check runs
 #   or statuses.
 # - In the merge queue, the tools come from the queue's base commit, and a group may not change
 #   promoted.toml and .github/ together.
@@ -60,8 +60,11 @@ jobs:
       - name: Load trusted tools and the proposed pins
         id: changed
         run: |
-          # The PR's commits, as data only (a fork's commits are not in this repo's branches).
-          [ -n "$PR" ] && git fetch --no-tags --quiet origin "$HEAD"
+          # The PR's commits, as data only. On pull_request the head is already the merge commit's
+          # second parent; fetch it only if it is somehow missing.
+          if [ -n "$PR" ] && ! git cat-file -e "$HEAD^{commit}" 2>/dev/null; then
+            git fetch --no-tags --quiet origin "$HEAD"
+          fi
 
           # Trusted tools judge the change: main's tip for a PR, the queue's base commit in the
           # merge queue, and main itself after a push.

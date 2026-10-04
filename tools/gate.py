@@ -10,14 +10,13 @@ of git as data; nothing from that change is imported or run.
         {"changed": [...new or moved pins...], "merged": "<tree or commit the pins land in>"}
     gate.py check-workflows DIR
         check that only promotion-gate.yml defines a job reported as `promotion-gate`, that the
-        gate's triggers match main's, it sets no concurrency and its jobs time out within 40
-        minutes, and that no workflow can write check runs or statuses
+        gate's triggers match GATE_TRIGGERS, it sets no concurrency and its jobs time out within
+        40 minutes, and that no workflow can write check runs or statuses
 
 Rules, by event:
 - A PR (pull_request) is judged against main's tip and by what will actually merge
-  (git merge-tree). A PR that changes
-  promoted.toml may change nothing else except README.md. Its workflows must not define another
-  check named promotion-gate or change the gate's triggers.
+  (git merge-tree). A PR that changes promoted.toml may change nothing else except README.md.
+  Its workflows must not define another check named promotion-gate or change the gate's triggers.
 - In the merge queue, a group may not change promoted.toml and .github/ together, and the same
   workflow rules apply to the merged tree.
 - After a push to main, main is trusted; only the pins are compared.
@@ -179,7 +178,7 @@ def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
             problems.append(f"{path}: its triggers differ from gate.py's GATE_TRIGGERS; a change to "
                             "when the gate runs needs an owner and lands outside the gate")
         if path == GATE_WORKFLOW and _has_concurrency(doc):
-            problems.append(f"{path}: must not set concurrency; as a required ruleset workflow a "
+            problems.append(f"{path}: must not set concurrency; as a required check a "
                             "cancelled run blocks the PR until someone re-runs it")
         if path == GATE_WORKFLOW:
             problems += [f"{path}: {p}" for p in _timeout_problems(doc)]
