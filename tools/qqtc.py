@@ -223,6 +223,10 @@ def load_promoted(path: Path = PROMOTED, cfg: dict | None = None, spec_dir: Path
         _require((spec_dir / entry["name"] / "toolchain.toml").is_file(), w,
                  f"no toolchains/{entry['name']}/toolchain.toml for this entry")
         entries[entry["name"]] = entry
+    # Only qqtc's own rendering is accepted, so every TOML parser (the roller's included) reads
+    # exactly the pins this one does: no comments, reordering or alternative spellings.
+    _require(path.read_bytes() == render_promoted(entries).encode(), where,
+             "is not in canonical form; regenerate it with `qqtc promote` instead of editing by hand")
     return entries
 
 
@@ -236,7 +240,8 @@ def _toml_value(v) -> str:
     return json.dumps(v)
 
 
-def write_promoted(entries: dict[str, dict], path: Path = PROMOTED) -> None:
+def render_promoted(entries: dict[str, dict]) -> str:
+    """The one canonical text of promoted.toml for these entries."""
     lines = [
         "# Promoted toolchains: one pin per toolchain, by digest. Written by `qqtc promote` in a",
         "# reviewed PR; read by the toolchain roller (quirq-ai/rollers, V0-ROL-01). Do not edit by hand.",
@@ -247,6 +252,11 @@ def write_promoted(entries: dict[str, dict], path: Path = PROMOTED) -> None:
         lines += [f"{k} = {_toml_value(entries[name][k])}" for k in PROMOTED_KEYS]
     text = "\n".join(lines) + "\n"
     tomllib.loads(text)  # never leave a file that later runs cannot read
+    return text
+
+
+def write_promoted(entries: dict[str, dict], path: Path = PROMOTED) -> None:
+    text = render_promoted(entries)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text)
     tmp.replace(path)

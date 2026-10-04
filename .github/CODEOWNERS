@@ -1,1 +1,10 @@
-# Owners for quirq-ai/toolchains. Left empty on purpose: suraj assigns owners (V0-ORG-02).
+# Owners for quirq-ai/toolchains. The paths below are the promotion gate and what it trusts; a
+# change to any of them should need an owner's review (V0-ORG-02, required by V0-ORG-03).
+# TODO(suraj): owners are your call. Name them by replacing each `#` line below with the path and
+# its owners, e.g. `/promoted.toml @quirq-ai/<team>`. Until then nothing here is owned and the
+# lines are comments, so GitHub does not reject the file.
+# /.github/          (workflows, including promotion-gate.yml, and this file)
+# /tools/            (qqtc.py and gate.py, which the gate runs from main)
+# /toolchains/       (specs: versions, sources, smoke and consumer commands)
+# /toolchains.toml   (registry and backend)
+# /promoted.toml     (the pins the roller rolls)
