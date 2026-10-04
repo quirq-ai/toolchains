@@ -1,0 +1,140 @@
+# Builds every toolchain, smoke-tests it, and builds its pinned consumer repos with it.
+# On main (or a manual run) it also publishes each toolchain to staging on the registry.
+# This is the github backend's builder; qqtc itself does not know about GitHub.
+name: build
+on:
+  pull_request:
+    paths: ["toolchains/**", "tools/**", "toolchains.toml", ".github/workflows/build.yml"]
+  push:
+    branches: [main]
+    paths: ["toolchains/**", "tools/**", "toolchains.toml", ".github/workflows/build.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+# PRs keep only the newest run. On main every commit gets its own group, so none is dropped
+# from staging when pushes land faster than a build.
+concurrency:
+  group: build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults:
+  run:
+    shell: bash   # -eo pipefail, so a failing command inside a pipe fails the step
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      names: ${{ steps.list.outputs.names }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - id: list
+        run: echo "names=$(python tools/qqtc.py list)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # No write permissions: this job runs build scripts and consumer repos' tests.
+    permissions:
+      contents: read
+    env:
+      QQ_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"   # runs qqtc only; the toolchain under test comes first on PATH
+      - name: Install build packages
+        run: |
+          python tools/qqtc.py ci-config "$QQ_NAME" > "$RUNNER_TEMP/ci-config.json"
+          pkgs=$(jq -r '.apt_packages // [] | join(" ")' "$RUNNER_TEMP/ci-config.json")
+          if [ -n "$pkgs" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends $pkgs
+          fi
+      - name: Build
+        run: python tools/qqtc.py build "$QQ_NAME" --out out
+      # Keep the built bytes before anything else runs, so smoke and consumer code cannot
+      # change what gets published.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Smoke test
+        run: |
+          python tools/qqtc.py unpack out/*.tar.gz "$RUNNER_TEMP/root"
+          python tools/qqtc.py smoke "$QQ_NAME" "$RUNNER_TEMP/root"
+      - name: Build consumer repos with it
+        run: python tools/qqtc.py consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"
+
+  publish:
+    needs: [plan, build]
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      QQ_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: out
+      - uses: oras-project/setup-oras@v2
+      - name: Publish to staging
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          registry=$(python3 -c "import tomllib; print(tomllib.load(open('toolchains.toml','rb'))['github']['registry'])")
+          record="out/$QQ_NAME.record.json"
+          file=$(jq -r .file "$record")
+          echo "$(jq -r .layer_sha256 "$record")  out/$file" | sha256sum -c -
+          tag="staging-$(jq -r '"\(.version)-r\(.revision)"' "$record")-${GITHUB_SHA::12}"
+          repo="$registry/$QQ_NAME"
+          echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          cd out
+          oras push "$repo:$tag" \
+            --artifact-type application/vnd.quirq.toolchain.v1 \
+            --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "org.opencontainers.image.created=1980-01-01T00:00:00Z" \
+            --annotation "org.opencontainers.image.version=$(jq -r .version "$QQ_NAME.record.json")" \
+            "$file:application/vnd.quirq.toolchain.layer.v1.tar+gzip"
+          digest=$(oras resolve "$repo:$tag")
+          ref="oci://$repo@$digest"
+          jq --arg ref "$ref" --arg tag "$tag" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '. + {ref: $ref, staging_tag: $tag, build_run: $run}' "$QQ_NAME.record.json" > staged.json
+          {
+            echo "### Staged \`$QQ_NAME\`"
+            echo
+            echo "Promote it with a PR that runs:"
+            echo
+            echo '```'
+            echo "python tools/qqtc.py promote $QQ_NAME --record - <<'JSON'"
+            cat staged.json
+            echo "JSON"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat staged.json

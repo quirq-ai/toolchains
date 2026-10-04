@@ -1,0 +1,7 @@
+# Repo-wide settings for quirq-ai/toolchains. Read by tools/qqtc.py.
+schema = "quirq-toolchains/1"
+backend = "github"        # github now; launchpad (quirq's own cloud) later
+
+[github]
+# Each toolchain is published as <registry>/<name>, addressed by digest (plan D6).
+registry = "ghcr.io/quirq-ai/toolchains"
