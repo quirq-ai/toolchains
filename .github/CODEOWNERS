@@ -1,10 +1,9 @@
-# Owners for quirq-ai/toolchains. The paths below are the promotion gate and what it trusts; a
-# change to any of them should need an owner's review (V0-ORG-02, required by V0-ORG-03).
-# TODO(suraj): owners are your call. Name them by replacing each `#` line below with the path and
-# its owners, e.g. `/promoted.toml @quirq-ai/<team>`. Until then nothing here is owned and the
-# lines are comments, so GitHub does not reject the file.
-# /.github/          (workflows, including promotion-gate.yml, and this file)
-# /tools/            (qqtc.py and gate.py, which the gate runs from main)
-# /toolchains/       (specs: versions, sources, smoke and consumer commands)
-# /toolchains.toml   (registry and backend)
-# /promoted.toml     (the pins the roller rolls)
+# Owners for quirq-ai/toolchains (V0-ORG-02). Code-owner review is required on main (V0-ORG-03),
+# so a change to any path here needs an owner's approval. The gate paths are listed on their own
+# so that a later catch-all change cannot drop them by accident.
+*                   @sharmasuraj0123
+/.github/           @sharmasuraj0123
+/tools/             @sharmasuraj0123
+/toolchains/        @sharmasuraj0123
+/toolchains.toml    @sharmasuraj0123
+/promoted.toml      @sharmasuraj0123

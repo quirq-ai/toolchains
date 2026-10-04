@@ -20,9 +20,10 @@
 # new push). As with any workflow, events caused by GITHUB_TOKEN start no run. There is no
 # concurrency group: a cancelled required run blocks the PR until someone re-runs it.
 # After a push, main is the trust root and its own tools run.
-# TODO(suraj): nothing requires this check yet. Required code-owner review of .github/, tools/,
-# toolchains/ and promoted.toml, and requiring this workflow from main (V0-ORG-02, V0-ORG-03, set
-# up by the gate thread), are what make it binding. Until then the gate is advisory.
+# What makes it binding: code-owner review of .github/, tools/, toolchains/ and promoted.toml
+# (V0-ORG-02, owners in .github/CODEOWNERS) and this workflow required from main by an org
+# ruleset (V0-ORG-03, applied from quirq-ai/gate). Until those rulesets are applied the gate is
+# advisory.
 name: promotion-gate
 on:
   pull_request_target:

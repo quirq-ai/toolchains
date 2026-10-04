@@ -12,8 +12,8 @@ How an agent changes this repo safely. Read `README.md` first.
 - Workflow YAML is read strictly: no duplicate keys and no `<<` merge keys.
 - Workflows must declare top-level `permissions`, never grant `checks` or `statuses` write, and
   never report a check named `promotion-gate` (`tools/gate.py check-workflows` checks this).
-- `.github/CODEOWNERS` lists the gate paths as comments; leave owner names and any `owners` list
-  to suraj.
+- `.github/CODEOWNERS` names suraj (`@sharmasuraj0123`) as owner of everything, gate paths
+  included; owner names are his call, so never change them.
 - Mark a decision you cannot make with a one-line `TODO(suraj):` or `TODO(expert):`.
 - This repo is public: no secrets, tokens or internal hostnames.
 - GitHub-specific code stays behind a `backend` field (`github` now, `launchpad` later).
