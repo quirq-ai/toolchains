@@ -14,7 +14,7 @@ of git as data; nothing from that change is imported or run.
         check runs or statuses
 
 Rules, by event:
-- A PR (pull_request_target, or pull_request when this runs as a required workflow) is judged
+- A PR (pull_request_target, or pull_request when this runs as an org ruleset workflow) is judged
   against main's tip and by what will actually merge (git merge-tree). A PR that changes
   promoted.toml may change nothing else except README.md. Its workflows must not define another
   check named promotion-gate or change the gate's triggers.

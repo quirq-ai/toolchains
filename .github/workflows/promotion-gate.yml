@@ -15,10 +15,10 @@
 # come from the base commit, every Python call runs isolated (-I), and a group may not change
 # promoted.toml and .github/ together (defence in depth: a group that guts this file skips it).
 # When run as an org ruleset workflow (event pull_request, file from main) it behaves as on
-# pull_request_target, taking its tools from main. GitHub then ignores the trigger filters above
-# (it runs on opened, synchronize and reopened, so retargeting a PR needs a new push) and does not
-# run for events GITHUB_TOKEN caused. There is no concurrency group: a ruleset workflow must not
-# cancel itself, because a cancelled required run blocks the PR until someone re-runs it.
+# pull_request_target, taking its tools from main. GitHub's ruleset docs say the trigger filters
+# above are then ignored (it runs on opened, synchronize and reopened, so retargeting a PR needs a
+# new push). As with any workflow, events caused by GITHUB_TOKEN start no run. There is no
+# concurrency group: a cancelled required run blocks the PR until someone re-runs it.
 # After a push, main is the trust root and its own tools run.
 # TODO(suraj): nothing requires this check yet. Required code-owner review of .github/, tools/,
 # toolchains/ and promoted.toml, and requiring this workflow from main (V0-ORG-02, V0-ORG-03, set
