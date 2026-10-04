@@ -1,5 +1,6 @@
 # Builds every toolchain, smoke-tests it, and builds its pinned consumer repos with it.
-# On main (or a manual run) it also publishes each toolchain to staging on the registry.
+# On main it also publishes each toolchain to staging on the registry, before any consumer code runs.
+# Third-party actions in the publish job are pinned by commit, since that job can push and sign.
 # This is the github backend's builder; qqtc itself does not know about GitHub.
 name: build
 on:
@@ -42,7 +43,9 @@ jobs:
         name: ${{ fromJSON(needs.plan.outputs.names) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # No write permissions: this job runs build scripts and consumer repos' tests.
+    # No write permissions: this job runs build scripts. Consumer repos' code runs in the
+    # consumers job, after publish, so their dependencies never share a job with the bytes
+    # that get signed or run before those bytes are published.
     permissions:
       contents: read
     env:
@@ -76,8 +79,6 @@ jobs:
         run: |
           python tools/qqtc.py unpack out/*.tar.gz "$RUNNER_TEMP/root"
           python tools/qqtc.py smoke "$QQ_NAME" "$RUNNER_TEMP/root"
-      - name: Build consumer repos with it
-        run: python tools/qqtc.py consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"
 
   publish:
     needs: [plan, build]
@@ -104,7 +105,7 @@ jobs:
         with:
           name: toolchain-${{ matrix.name }}
           path: out
-      - uses: oras-project/setup-oras@v2
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Publish to staging
         id: push
         env:
@@ -145,9 +146,42 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat staged.json
       # Signed proof that this workflow, on main at this commit, produced this digest. The
-      # promotions gate verifies it; the revision annotation alone is only the pusher's word.
-      - uses: actions/attest-build-provenance@v4
+      # promotion-gate check verifies it; the revision annotation alone is only the pusher's word.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.push.outputs.repo }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  # Consumer repos install third-party dependencies, so they run last: on main only after
+  # publish has pushed and signed the bytes, so nothing they do can change what was published.
+  consumers:
+    needs: [plan, build, publish]
+    if: >-
+      always() && needs.build.result == 'success'
+      && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      QQ_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: actions/download-artifact@v8
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: out
+      - name: Build consumer repos with it
+        run: |
+          python tools/qqtc.py unpack out/*.tar.gz "$RUNNER_TEMP/root"
+          python tools/qqtc.py consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"

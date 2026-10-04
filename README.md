@@ -38,11 +38,20 @@ Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-TCH-01 | Python toolchain (CPython 3.14.8) | #2, #5 | Built by CI, promoted by digest; xo-space's tests and route parity pass on it in CI. Pinning it in xo-space's `infra/repo.toml` waits on V0-SYN-01 (manifest schema). |
+| V0-TCH-01 | Python toolchain (CPython 3.14.8) | #2, #5 | Built by CI, promoted by digest; xo-space's suite passes on it in CI (1713 collected; an independent run on 3.14.8 got 1705 passed, 8 skipped) and its route parity check passes. Not done yet: pinning it in xo-space's `infra/repo.toml` waits on xo-space's onboarding (V0-ONB-01), and on the packages below being public. |
 | V0-TCH-02 | Node.js 24.21.0 LTS and pnpm 11.28.2 | #3, #5 | Built and promoted by digest; innernet installs, typechecks and builds with it in CI. |
 | V0-TCH-03 | Staging and promotion | #4, #5 | Promotion PR #5 passed the promotion gate and landed. "Through the gate" in the merge-queue sense waits on V0-ORG-03 (merge queue and rulesets). |
 
 Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) reads them from there.
+
+**Needs suraj (org admin):**
+- Make these ghcr packages public: `ghcr.io/quirq-ai/toolchains/python` and
+  `ghcr.io/quirq-ai/toolchains/node`. New packages start private, so until then `qq sync`, recipes
+  and product-repo CI cannot pull the pins. Set it in each package's settings, under "Change
+  visibility". Every new toolchain added here adds a package that needs the same step.
+- Make `ci` and `promotion-gate` required checks on `main`, with the merge queue (V0-ORG-03).
+- Name owners for `.github/`, `tools/`, `toolchains/` and `promoted.toml`, with required code-owner
+  review (V0-ORG-02).
 
 ## Working here
 
