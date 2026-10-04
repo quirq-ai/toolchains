@@ -9,6 +9,7 @@ How an agent changes this repo safely. Read `README.md` first.
 - Promoting a toolchain is a reviewed PR that edits `promoted.toml` and nothing else except
   `README.md`; `promotion-gate` refuses anything more. Change the gate (`.github/`, `tools/`,
   `toolchains/`) in its own PR. Never promote a digest that CI did not build from this repo.
+- Workflow YAML is read strictly: no duplicate keys and no `<<` merge keys.
 - Workflows must declare top-level `permissions`, never grant `checks` or `statuses` write, and
   never report a check named `promotion-gate` (`tools/gate.py check-workflows` checks this).
 - `.github/CODEOWNERS` lists the gate paths as comments; leave owner names and any `owners` list
