@@ -17,6 +17,19 @@ digest, never by a moving version.
 - **Promotion.** A reviewed PR moves the staged digest into `promoted.toml`. That file is what the
   roller reads to update pins in product repos.
 
+## Adding or moving a toolchain
+
+1. Edit `toolchains/<name>/toolchain.toml` (version, source URL and sha256) and its `build.sh`.
+   Open a PR. The `build` check builds it, smoke-tests it, and builds its pinned consumer repos.
+2. When it lands, `build` on `main` stages it as `ghcr.io/quirq-ai/toolchains/<name>:staging-…`
+   and prints a ready-made record in the run summary.
+3. Promote it in its own PR: `python tools/qqtc.py promote <name> --record staged.json`, which
+   rewrites `promoted.toml`. The `promotions` job in `ci` pulls the digest, checks that a staging
+   build of a commit on `main` produced exactly those bytes, and re-runs the smoke tests and
+   consumer builds on them. A reviewer approves; then it merges.
+4. The toolchain roller (quirq-ai/rollers, V0-ROL-01) reads `promoted.toml` and opens pin-update
+   PRs in product repos.
+
 Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra-config),
 `docs/plan.md` and `docs/v0.md`.
 
@@ -25,8 +38,8 @@ Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-TCH-01 | Python toolchain (CPython 3.14.x) | #2 | built and staged; pin waits on V0-TCH-03 and V0-SYN-01 |
-| V0-TCH-02 | Node.js 24 LTS and pnpm toolchain | #3 | in review |
-| V0-TCH-03 | Staging and promotion | | not started |
+| V0-TCH-02 | Node.js 24 LTS and pnpm toolchain | #3 | built and staged; innernet builds with it in CI |
+| V0-TCH-03 | Staging and promotion | #4 | in review |
 
 ## Working here
 
