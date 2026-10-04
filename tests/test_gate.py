@@ -1,12 +1,14 @@
 """Tests for tools/gate.py: the promotion gate's rules, on throwaway git repos. No network."""
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -90,7 +92,7 @@ def branch(repo: Path, name: str = "pr", start: str = "main") -> None:
     sh(repo, "checkout", "-q", "-b", name, start)
 
 
-def run_prepare(repo: Path, head: str, event: str = "pull_request_target", base: str | None = None):
+def run_prepare(repo: Path, head: str, event: str = "pull_request", base: str | None = None):
     main = sh(repo, "rev-parse", "main")
     gate_dir = repo.parent / f"gate-{head[:8]}-{event}"
     if not gate_dir.exists():
@@ -215,7 +217,7 @@ def test_merge_inside_the_pr_cannot_hide_a_change(repo):
 
 def test_changing_the_gate_triggers_is_refused(repo):
     branch(repo)
-    yml = GATE_YML.replace("  merge_group:\n", "  merge_group:\n  pull_request:\n")
+    yml = GATE_YML.replace("  merge_group:\n", "  pull_request_target:\n  merge_group:\n")
     assert yml != GATE_YML
     head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
     with pytest.raises(gate.GateError, match="triggers differ"):
@@ -266,6 +268,52 @@ def test_every_gate_job_needs_a_timeout(repo, job):
     head = commit(repo, {".github/workflows/promotion-gate.yml": GATE_YML + job})
     with pytest.raises(gate.GateError, match="job 'second'"):
         run_prepare(repo, head)
+
+
+def test_pull_request_target_is_no_longer_a_gate_event(repo):
+    branch(repo)
+    head = commit(repo, {"README.md": "changed\n"})
+    with pytest.raises(gate.GateError, match="unexpected event"):
+        run_prepare(repo, head, event="pull_request_target")
+
+
+def _pick_tools(repo: Path, event: str, base: str, head: str) -> subprocess.CompletedProcess:
+    """Run the workflow's own `case` that picks the trusted tools commit, as the step does."""
+    step = next(st["run"] for st in yaml.safe_load(GATE_YML)["jobs"]["promotion-gate"]["steps"]
+                if st.get("id") == "changed")
+    case = step[step.index('case "$GITHUB_EVENT_NAME" in'):step.index("esac") + len("esac")]
+    env = {"PATH": os.environ["PATH"], "GITHUB_EVENT_NAME": event, "BASE": base, "HEAD": head}
+    return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
+                           case + '\necho "$tools"'], cwd=repo, env=env, capture_output=True, text=True)
+
+
+def test_the_step_picks_trusted_tools_for_each_event(repo):
+    main = sh(repo, "rev-parse", "main")
+    sh(repo, "update-ref", "refs/remotes/origin/main", main)
+    branch(repo)
+    head = commit(repo, {"README.md": "changed\n"})
+    picked = {e: _pick_tools(repo, e, base="b" * 40, head=head) for e in
+              ("pull_request", "merge_group", "push", "pull_request_target", "workflow_dispatch")}
+    assert picked["pull_request"].stdout.strip() == main  # main's tip, never the PR head
+    assert picked["merge_group"].stdout.strip() == "b" * 40  # the queue's base
+    assert picked["push"].stdout.strip() == head  # main itself after a push
+    for event in ("pull_request_target", "workflow_dispatch"):
+        assert picked[event].returncode != 0 and "does not handle" in picked[event].stdout
+
+
+def test_prepare_from_the_trusted_worktree_ignores_the_checkouts_gitattributes(repo):
+    # The step runs prepare from inside $GATE. An untracked .gitattributes in the PR checkout
+    # (merge=union) must not turn a conflicting promoted.toml into a clean merge.
+    sh(repo, "checkout", "-q", "-b", "side", "main")
+    side = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "c" * 64)})})
+    sh(repo, "checkout", "-q", "main")
+    commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "d" * 64)})})
+    (repo / ".gitattributes").write_text("promoted.toml merge=union\n")
+    main = sh(repo, "rev-parse", "main")
+    gate_dir = repo.parent / "gate-wt"
+    sh(repo, "worktree", "add", "-q", "--detach", str(gate_dir), main)
+    with pytest.raises(gate.GateError, match="conflicts with main"):
+        gate.prepare(gate_dir, "pull_request", main, side, main, gate_dir, repo.parent / "out")
 
 
 def test_removing_the_gate_workflow_is_refused(repo):

@@ -10,14 +10,13 @@ of git as data; nothing from that change is imported or run.
         {"changed": [...new or moved pins...], "merged": "<tree or commit the pins land in>"}
     gate.py check-workflows DIR
         check that only promotion-gate.yml defines a job reported as `promotion-gate`, that the
-        gate's triggers match main's, it sets no concurrency and its jobs time out within 40
-        minutes, and that no workflow can write check runs or statuses
+        gate's triggers match GATE_TRIGGERS, it sets no concurrency and its jobs time out within
+        40 minutes, and that no workflow can write check runs or statuses
 
 Rules, by event:
-- A PR (pull_request_target, or pull_request when this runs as an org ruleset workflow) is judged
-  against main's tip and by what will actually merge (git merge-tree). A PR that changes
-  promoted.toml may change nothing else except README.md. Its workflows must not define another
-  check named promotion-gate or change the gate's triggers.
+- A PR (pull_request) is judged against main's tip and by what will actually merge
+  (git merge-tree). A PR that changes promoted.toml may change nothing else except README.md.
+  Its workflows must not define another check named promotion-gate or change the gate's triggers.
 - In the merge queue, a group may not change promoted.toml and .github/ together, and the same
   workflow rules apply to the merged tree.
 - After a push to main, main is trusted; only the pins are compared.
@@ -37,16 +36,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qqtc  # noqa: E402
 
-PR_EVENTS = ("pull_request_target", "pull_request")
+PR_EVENTS = ("pull_request",)
 PROMOTION_FILES = {"promoted.toml", "README.md"}
 GATE_WORKFLOW = ".github/workflows/promotion-gate.yml"
 GATE_JOB = "promotion-gate"
 GATE_TIMEOUT = 40  # minutes; the merge queue's admission limit (quirq-ai/gate, gate.toml)
-# When the gate runs. A PR cannot change this: the trusted copy of this constant judges it, so a
-# change to the triggers needs an owner to land it outside the gate.
+# When the gate runs. A PR that changes the gate's triggers is judged by the trusted copy of this
+# constant and refused, both on the PR and in the merge queue. Such a change needs suraj (the code
+# owner of .github/ and tools/) to take promotion-gate out of the required checks, merge it, and
+# put the check back. This is not a security boundary on its own: the workflow file comes from the
+# PR, so code-owner review of .github/ is what stops a PR from editing the step that picks the tools.
 GATE_TRIGGERS = {
-    "pull_request_target": {"branches": ["main"], "types": ["opened", "synchronize", "reopened", "edited"]},
-    "merge_group": None,
+    "pull_request": {"branches": ["main"], "types": ["opened", "synchronize", "reopened", "edited"]},
+    "merge_group": {"types": ["checks_requested"]},
     "push": {"branches": ["main"]},
 }
 
@@ -179,7 +181,7 @@ def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
             problems.append(f"{path}: its triggers differ from gate.py's GATE_TRIGGERS; a change to "
                             "when the gate runs needs an owner and lands outside the gate")
         if path == GATE_WORKFLOW and _has_concurrency(doc):
-            problems.append(f"{path}: must not set concurrency; as a required ruleset workflow a "
+            problems.append(f"{path}: must not set concurrency; as a required check a "
                             "cancelled run blocks the PR until someone re-runs it")
         if path == GATE_WORKFLOW:
             problems += [f"{path}: {p}" for p in _timeout_problems(doc)]
