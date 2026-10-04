@@ -244,6 +244,30 @@ def test_gate_job_concurrency_is_refused(repo):
         run_prepare(repo, head)
 
 
+@pytest.mark.parametrize("value", ["41", "45", "0", "true", "40.0", "'30'", "${{ 30 }}", None])
+def test_gate_timeout_over_the_queue_limit_is_refused(repo, value):
+    branch(repo)
+    line = "    timeout-minutes: 35"
+    assert line in GATE_YML
+    yml = GATE_YML.replace(line, "" if value is None else f"    timeout-minutes: {value}", 1)
+    head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
+    with pytest.raises(gate.GateError, match="timeout-minutes"):
+        run_prepare(repo, head)
+
+
+@pytest.mark.parametrize("job", [
+    "  second:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n",
+    "  second:\n    uses: ./.github/workflows/ci.yml\n",
+    "  second: 3\n",
+    "  second:\n",
+])
+def test_every_gate_job_needs_a_timeout(repo, job):
+    branch(repo)
+    head = commit(repo, {".github/workflows/promotion-gate.yml": GATE_YML + job})
+    with pytest.raises(gate.GateError, match="job 'second'"):
+        run_prepare(repo, head)
+
+
 def test_removing_the_gate_workflow_is_refused(repo):
     branch(repo)
     head = commit(repo, {".github/workflows/promotion-gate.yml": None})
