@@ -12,6 +12,7 @@ def test_codeowners_owns_every_gate_path():
         if line.strip() and not line.lstrip().startswith("#"):
             path, *owners = line.split()
             rules[path] = owners
-    assert "*" not in rules  # code-owner review is required, so a catch-all would gate every PR
-    for path in ("/.github/", "/tools/", "/toolchains/", "/toolchains.toml", "/promoted.toml"):
-        assert rules.get(path) == ["@sharmasuraj0123"], path
+    # Exactly the gate paths: no catch-all (code-owner review is required, so it would gate every
+    # PR) and no later line that could leave a gate file unowned (the last match wins).
+    gate = {"/.github/", "/tools/", "/toolchains/", "/toolchains.toml", "/promoted.toml"}
+    assert rules == {path: ["@sharmasuraj0123"] for path in gate}
