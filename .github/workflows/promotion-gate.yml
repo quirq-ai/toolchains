@@ -39,7 +39,7 @@ defaults:
 jobs:
   promotion-gate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 40   # the merge queue drops an entry whose check has not reported in 40
     permissions:
       contents: read
       packages: read

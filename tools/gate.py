@@ -10,8 +10,8 @@ of git as data; nothing from that change is imported or run.
         {"changed": [...new or moved pins...], "merged": "<tree or commit the pins land in>"}
     gate.py check-workflows DIR
         check that only promotion-gate.yml defines a job reported as `promotion-gate`, that the
-        gate's triggers match main's and it sets no concurrency, and that no workflow can write
-        check runs or statuses
+        gate's triggers match main's, it sets no concurrency and its jobs time out within 40
+        minutes, and that no workflow can write check runs or statuses
 
 Rules, by event:
 - A PR (pull_request_target, or pull_request when this runs as an org ruleset workflow) is judged
@@ -41,6 +41,7 @@ PR_EVENTS = ("pull_request_target", "pull_request")
 PROMOTION_FILES = {"promoted.toml", "README.md"}
 GATE_WORKFLOW = ".github/workflows/promotion-gate.yml"
 GATE_JOB = "promotion-gate"
+GATE_TIMEOUT = 40  # minutes; the merge queue's admission limit for a required check (gate.toml)
 # When the gate runs. A PR cannot change this: the trusted copy of this constant judges it, so a
 # change to the triggers needs an owner to land it outside the gate.
 GATE_TRIGGERS = {
@@ -116,6 +117,13 @@ def _has_concurrency(doc: dict) -> bool:
     return "concurrency" in doc or any(isinstance(j, dict) and "concurrency" in j for j in jobs)
 
 
+def _slow_jobs(doc: dict) -> list:
+    jobs = doc.get("jobs")
+    jobs = jobs.items() if isinstance(jobs, dict) else []
+    return [j for j, job in jobs if not isinstance(job, dict)
+            or type(job.get("timeout-minutes")) is not int or not 0 < job["timeout-minutes"] <= GATE_TIMEOUT]
+
+
 def _risky_permissions(doc: dict):
     """(where, what) for each grant that lets a token write check runs or commit statuses."""
     scopes = [("the workflow", doc)]
@@ -161,6 +169,10 @@ def workflow_problems(workflows: dict[str, bytes]) -> list[str]:
         if path == GATE_WORKFLOW and _has_concurrency(doc):
             problems.append(f"{path}: must not set concurrency; as a required ruleset workflow a "
                             "cancelled run blocks the PR until someone re-runs it")
+        if path == GATE_WORKFLOW:
+            problems += [f"{path}: job {j!r} must set timeout-minutes to at most {GATE_TIMEOUT}; "
+                         "the merge queue drops an entry whose check has not reported by then"
+                         for j in _slow_jobs(doc)]
         if "on" in doc and True in doc:
             problems.append(f"{path}: declares its triggers twice (`on` and \"on\")")
         if not (isinstance(doc.get("permissions"), dict) or doc.get("permissions") == "read-all"):
