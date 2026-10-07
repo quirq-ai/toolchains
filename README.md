@@ -33,8 +33,9 @@ digest, never by a moving version.
    what will actually merge. On every PR it also refuses workflows that could fake it:
    another check named `promotion-gate`, changed gate triggers, or a token that can write checks
    or statuses (`tools/gate.py`). A reviewer approves; then it merges through the merge queue,
-   where the gate runs again. The check is advisory until the toolchains ruleset requires it
-   (V0-ORG-03), and the gate's next settings run makes it required.
+   where the gate runs again. The check is advisory until the toolchains ruleset requires it.
+   gate #25 adds it to that ruleset; it becomes required when gate's settings are next applied,
+   which has not happened yet.
 4. The toolchain roller (quirq-ai/rollers, V0-ROL-01) reads `promoted.toml` and opens pin-update
    PRs in product repos.
 
@@ -45,21 +46,21 @@ Plan and all v0 items: [quirq-ai/infra-config](https://github.com/quirq-ai/infra
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-TCH-01 | Python toolchain (CPython 3.14.8) | #2, #5 | Built by CI, promoted by digest; xo-space's suite passes on it in CI (1713 collected; an independent run on 3.14.8 got 1705 passed, 8 skipped) and its route parity check passes. Not done yet: pinning it in xo-space's `infra/repo.toml` waits on xo-space's onboarding (V0-ONB-01), and on the packages below being public. |
-| V0-TCH-02 | Node.js 24.21.0 LTS and pnpm 11.28.2 | #3, #5 | Built and promoted by digest; innernet installs, typechecks and builds with it in CI. |
-| V0-TCH-03 | Staging and promotion | #4, #5 | Promotion PR #5 passed the promotion gate and landed. "Through the gate" in the merge-queue sense waits on V0-ORG-03 (merge queue and rulesets). |
+| V0-TCH-01 | Python toolchain (CPython 3.14.8) | #2, #5 | Built by CI, promoted by digest; xo-space's suite passes on it in CI (1713 collected; an independent run on 3.14.8 got 1705 passed, 8 skipped) and its route parity check passes. xo-space's `infra/repo.toml` now pins this digest. |
+| V0-TCH-02 | Node.js 24.21.0 LTS and pnpm 11.28.2 | #3, #5 | Built and promoted by digest; innernet installs, typechecks and builds with it in CI, and innernet's `infra/repo.toml` now pins this digest. |
+| V0-TCH-03 | Staging and promotion | #4, #5 | Promotion PR #5 passed the promotion gate and landed. gate's apply at 6610664 turned on this repo's ruleset and merge queue (V0-ORG-03); no promotion has landed through the queue since, and `promotion-gate` is not a required check yet. |
 
 Promoted pins live in [`promoted.toml`](promoted.toml); the roller (V0-ROL-01) reads them from there.
 
 **Needs suraj (org admin):**
-- Make these ghcr packages public: `ghcr.io/quirq-ai/toolchains/python` and
-  `ghcr.io/quirq-ai/toolchains/node`. New packages start private, so until then `qq sync`, recipes
-  and product-repo CI cannot pull the pins. Set it in each package's settings, under "Change
-  visibility". Every new toolchain added here adds a package that needs the same step.
-- Apply the toolchains ruleset from quirq-ai/gate (V0-ORG-03): required code-owner review (stale
-  approvals are dismissed on each push), `ci` and `promotion-gate` required (a gate follow-up adds
-  `promotion-gate` to toolchains' checks once this workflow runs on `pull_request`), and a merge
-  queue that merges one PR per group. On GitHub Free there is no org-required workflow, so the
+- `ghcr.io/quirq-ai/toolchains/python` and `ghcr.io/quirq-ai/toolchains/node` are public: an
+  anonymous pull of each promoted digest works. New packages start private, so every new toolchain
+  added here adds a package that must be made public in its settings, under "Change visibility",
+  before `qq sync`, recipes and product-repo CI can pull it.
+- The toolchains ruleset from quirq-ai/gate (V0-ORG-03) is applied as of gate 6610664: required
+  code-owner review (stale approvals are dismissed on each push), `ci` required, and a merge queue
+  that merges one PR per group. gate #25 adds `promotion-gate` to the required checks; it takes
+  effect at the next run of gate's apply. On GitHub Free there is no org-required workflow, so the
   `promotion-gate` workflow file comes from the PR: a PR that edits it can change which tools
   judge it, and only your code-owner review of `.github/` stops that, so read any change to it
   line by line. The workflow rules in `gate.py` cannot close every way to fake the check: anyone
