@@ -1,0 +1,25 @@
+# Compatibility only, not onboarded. quirq-ai/test-pipelines' daily compat check validates this
+# manifest, runs `qq sync` and the kind's commands from infra-config, and shows the result on the
+# scorecard. This repo is not in infra-config's repos.toml, so no generated workflow, builder or
+# roller reads this file, and its pins move only when someone runs `qqsync pin`.
+#
+# quirq infra (qq) manifest, schema quirq-repo/1 (quirq-ai/sync), written by `qqsync init`. Tools read
+# it only through qqsync (`qqsync show` or the qqsync.manifest library), never another parser.
+# Change pins with `qqsync pin`; edit targets by hand. Each target starts `cacheable = false`:
+# without `srcs` its inputs are unknown, so a cached result could be stale. Once a target lists its
+# `srcs`, delete that line.
+# The toolchain pins are the ones quirq-ai/toolchains promoted: `source` names the OCI image
+# manifest and `digest` the layer in it.
+schema = "quirq-repo/1"
+
+[qq]
+version = "0.1.0"
+
+[toolchains.python]
+version = "3.14.8"
+platforms.linux-x86_64 = { source = "oci://ghcr.io/quirq-ai/toolchains/python@sha256:32c0b762db5ec5453e63cf057ab4fa072751a19f1af70f08c07ac4f5fb70a716", digest = "sha256:230c6677ccbaba9043c810b9c4a6096ed354c8a981bb62ea90bd059b12d1b03c" }
+
+[[targets]]
+name = "pytest"
+kind = "pytest"
+cacheable = false
