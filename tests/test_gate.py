@@ -249,7 +249,7 @@ def test_gate_job_concurrency_is_refused(repo):
 @pytest.mark.parametrize("value", ["41", "45", "0", "true", "40.0", "'30'", "${{ 30 }}", None])
 def test_gate_timeout_over_the_queue_limit_is_refused(repo, value):
     branch(repo)
-    line = "    timeout-minutes: 35"
+    line = "    timeout-minutes: 25"
     assert line in GATE_YML
     yml = GATE_YML.replace(line, "" if value is None else f"    timeout-minutes: {value}", 1)
     head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
@@ -388,3 +388,11 @@ def test_the_required_check_waits_for_prepare_and_every_verify_leg():
     assert not passes("success", "cancelled", "1")
     assert not passes("failure", "skipped", "0")
     assert not passes("cancelled", "skipped", "")
+
+
+def test_gate_jobs_that_add_up_past_the_queue_limit_are_refused(repo):
+    branch(repo)
+    yml = GATE_YML.replace("    timeout-minutes: 25", "    timeout-minutes: 30", 1)
+    head = commit(repo, {".github/workflows/promotion-gate.yml": yml})
+    with pytest.raises(gate.GateError, match="add up to 45"):
+        run_prepare(repo, head)

@@ -10,8 +10,8 @@ of git as data; nothing from that change is imported or run.
         {"changed": [...new or moved pins...], "merged": "<tree or commit the pins land in>"}
     gate.py check-workflows DIR
         check that only promotion-gate.yml defines a job reported as `promotion-gate`, that the
-        gate's triggers match GATE_TRIGGERS, it sets no concurrency and its jobs time out within
-        40 minutes, and that no workflow can write check runs or statuses
+        gate's triggers match GATE_TRIGGERS, it sets no concurrency and its jobs' timeouts add up
+        to at most 40 minutes, and that no workflow can write check runs or statuses
 
 Rules, by event:
 - A PR (pull_request) is judged against main's tip and by what will actually merge
@@ -120,9 +120,11 @@ def _has_concurrency(doc: dict) -> bool:
 
 
 def _timeout_problems(doc: dict) -> list[str]:
-    """Why each gate job could outlive the merge queue's limit, one message per job."""
+    """Why the gate could outlive the merge queue's limit: one message per job, and one when the
+    jobs' timeouts add up to more (they may run one after another)."""
     jobs = doc.get("jobs")
     out = []
+    total = 0
     for j, job in (jobs.items() if isinstance(jobs, dict) else []):
         if not isinstance(job, dict):
             out.append(f"job {j!r} is not a mapping (got {job!r})")
@@ -135,6 +137,11 @@ def _timeout_problems(doc: dict) -> list[str]:
         if type(t) is not int or not 0 < t <= GATE_TIMEOUT:
             out.append(f"job {j!r} must set timeout-minutes to an integer from 1 to {GATE_TIMEOUT} "
                        f"(got {t!r}); the merge queue drops an entry whose check has not reported by then")
+        else:
+            total += t
+    if total > GATE_TIMEOUT:
+        out.append(f"its jobs' timeout-minutes add up to {total}, over {GATE_TIMEOUT}; jobs that run in turn "
+                   "could outlast the merge queue's limit")
     return out
 
 
