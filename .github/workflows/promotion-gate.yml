@@ -42,9 +42,10 @@ defaults:
 jobs:
   prepare:
     runs-on: ubuntu-24.04
-    # The merge queue drops an entry whose check has not reported within 40 minutes, and the
-    # timeout counts only from job start, so leave room for queueing and setup.
-    timeout-minutes: 15
+    # The merge queue drops an entry whose check has not reported within 40 minutes. The three
+    # jobs run in turn, so their timeouts (10 + 25 + 5) add up to under that, and each counts only
+    # from its own start, so leave room for queueing and setup.
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read
@@ -172,7 +173,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.prepare.outputs.verify) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: read
