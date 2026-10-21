@@ -1,7 +1,8 @@
 # The gate for toolchain pins: every new or moved entry in promoted.toml must be bytes that
 # build.yml, running on main, signed provenance for. Its manifest must be the one-layer shape
 # qq sync expects, and the spec at that commit and in the merge result must match the pin's
-# version. The pulled bytes must also pass the smoke tests and consumer builds again.
+# version. The pulled bytes must also pass the smoke tests and consumer builds again, on a runner
+# of the pin's own platform (toolchains.toml [github.runners], read from the trusted tools).
 #
 # A promotion PR must not be able to weaken its own check, and the check must be one a repo
 # ruleset can require on the GitHub Free plan (no org rulesets). So it runs as a plain
@@ -21,6 +22,9 @@
 # tools/ is still judged by main's tools; it changes what judges later PRs, so tools/ is
 # code-owned too. There is no concurrency group: a cancelled required run blocks the PR until
 # someone re-runs it. Events caused by GITHUB_TOKEN start no run.
+# Three jobs: `prepare` applies the rules and checks provenance, specs and manifests; `verify`
+# pulls each new pin on its platform's runner and smoke-tests and builds consumers there; the
+# `promotion-gate` job, the required check, passes only when both did.
 name: promotion-gate
 on:
   pull_request:
@@ -36,14 +40,18 @@ defaults:
   run:
     shell: bash
 jobs:
-  promotion-gate:
+  prepare:
     runs-on: ubuntu-24.04
     # The merge queue drops an entry whose check has not reported within 40 minutes, and the
     # timeout counts only from job start, so leave room for queueing and setup.
-    timeout-minutes: 35
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: read
+    outputs:
+      count: ${{ steps.changed.outputs.count }}
+      tools: ${{ steps.changed.outputs.tools }}
+      verify: ${{ steps.changed.outputs.verify }}
     env:
       BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
       HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
@@ -85,28 +93,41 @@ jobs:
             --head "$HEAD" --trusted "$tools" --gate "$GATE" --out "$RUNNER_TEMP") > "$RUNNER_TEMP/plan.json"
           jq .changed "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/changed.json"
           cat "$RUNNER_TEMP/changed.json"
-          echo "merged=$(jq -r .merged "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
-          echo "count=$(jq length "$RUNNER_TEMP/changed.json")" >> "$GITHUB_OUTPUT"
+          # One verify leg per new pin, on the runner the trusted toolchains.toml names for its platform.
+          python -I - "$GATE/toolchains.toml" "$RUNNER_TEMP/changed.json" > "$RUNNER_TEMP/verify.json" <<'PY'
+          import json, sys, tomllib
+          runners = tomllib.load(open(sys.argv[1], "rb"))["github"].get("runners", {"linux-x86_64": "ubuntu-24.04"})
+          legs = []
+          for e in json.load(open(sys.argv[2])):
+              if e["platform"] not in runners:
+                  sys.exit(f"{e['name']}: no runner for {e['platform']} in toolchains.toml")
+              legs.append({k: e[k] for k in ("name", "platform", "ref", "layer_sha256")} | {"runner": runners[e["platform"]]})
+          print(json.dumps(legs))
+          PY
+          {
+            echo "merged=$(jq -r .merged "$RUNNER_TEMP/plan.json")"
+            echo "count=$(jq length "$RUNNER_TEMP/changed.json")"
+            echo "tools=$tools"
+            echo "verify=$(cat "$RUNNER_TEMP/verify.json")"
+          } >> "$GITHUB_OUTPUT"
       - name: Set up ORAS
         if: steps.changed.outputs.count != '0'
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
-      - name: Pull and check each new pin
+      - name: Check provenance, spec and manifest of each new pin
         if: steps.changed.outputs.count != '0'
         env:
           MERGED: ${{ steps.changed.outputs.merged }}
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$REGISTRY_USER" --password-stdin
           jq -c '.[]' "$RUNNER_TEMP/changed.json" | while read -r entry; do
             name=$(jq -r .name <<<"$entry")
+            platform=$(jq -r .platform <<<"$entry")
             ref=$(jq -r '.ref | ltrimstr("oci://")' <<<"$entry")
             layer=$(jq -r .layer_sha256 <<<"$entry")
             built_from=$(jq -r .built_from <<<"$entry")
-            fail() { echo "::error::$name: $*"; exit 1; }
-            echo "::group::check $name ($ref)"
+            fail() { echo "::error::$name ($platform): $*"; exit 1; }
+            echo "::group::check $name $platform ($ref)"
 
             # 1. Provenance: build.yml on main, at built_from, produced this digest.
             gh attestation verify "oci://$ref" --repo "$GITHUB_REPOSITORY" \
@@ -114,46 +135,100 @@ jobs:
               --source-ref refs/heads/main --source-digest "$built_from" \
               || fail "no build provenance from build.yml on main at $built_from for this digest"
 
-            # 2. The spec at that commit describes the version the pin claims.
+            # 2. The spec at that commit describes the version and platform the pin claims.
             #    And the spec in what will merge, so a spec change merged alongside the promotion
-            #    cannot land a pin that main's push run then rejects. Specs are data here.
+            #    cannot land a pin that main's push run then rejects. Specs are data here; the
+            #    comparison is the trusted qqtc's.
             specs=("$built_from" "$MERGED")
             for at in "${specs[@]}"; do
               git show "$at:toolchains/$name/toolchain.toml" > "$RUNNER_TEMP/spec-$name.toml" \
                 || fail "toolchains/$name/toolchain.toml does not exist at $at"
-              python -I - "$RUNNER_TEMP/spec-$name.toml" "$entry" <<'PY' || fail "the pin's version does not match the spec at $at"
+              python -I - "$GATE/tools" "$RUNNER_TEMP/spec-$name.toml" "$entry" <<'PY' || fail "the pin does not match the spec at $at"
           import json, sys, tomllib
-          spec = tomllib.load(open(sys.argv[1], "rb"))["toolchain"]
-          entry = json.loads(sys.argv[2])
-          bad = [k for k in ("version", "revision", "platform") if spec[k] != entry[k]]
-          sys.exit(f"mismatch in {bad}" if bad else 0)
+          sys.path.insert(0, sys.argv[1])
+          import qqtc
+          bad = qqtc.spec_mismatch(tomllib.load(open(sys.argv[2], "rb"))["toolchain"], json.loads(sys.argv[3]))
+          sys.exit("; ".join(bad) if bad else 0)
           PY
             done
 
             # 3. The manifest is exactly one toolchain layer, the one the pin names.
-            oras manifest fetch "$ref" > "$RUNNER_TEMP/manifest-$name.json"
+            oras manifest fetch "$ref" > "$RUNNER_TEMP/manifest.json"
             jq -e --arg layer "sha256:$layer" '
               .artifactType == "application/vnd.quirq.toolchain.v1"
               and (.layers | length) == 1
               and .layers[0].digest == $layer
               and .layers[0].mediaType == "application/vnd.quirq.toolchain.layer.v1.tar+gzip"
-            ' "$RUNNER_TEMP/manifest-$name.json" >/dev/null || fail "manifest is not one toolchain layer with digest sha256:$layer"
+            ' "$RUNNER_TEMP/manifest.json" >/dev/null || fail "manifest is not one toolchain layer with digest sha256:$layer"
+            echo "::endgroup::"
+          done
 
-            # 4. The pulled bytes are that layer.
-            dir="$RUNNER_TEMP/pull/$name"
-            oras pull "$ref" -o "$dir"
-            tarball=$(jq -r '.layers[0].annotations["org.opencontainers.image.title"]' "$RUNNER_TEMP/manifest-$name.json")
-            echo "$layer  $dir/$tarball" | sha256sum --strict -c -
-            python -I "$GATE/tools/qqtc.py" unpack "$dir/$tarball" "$RUNNER_TEMP/root/$name"
-            echo "::endgroup::"
-          done
-          oras logout ghcr.io   # consumer code below runs without registry credentials
-      - name: Smoke-test and build consumers from the pulled bytes
-        if: steps.changed.outputs.count != '0'
+  # Each new pin's bytes, pulled and run on a machine of its own platform.
+  verify:
+    needs: prepare
+    if: needs.prepare.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.verify) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: read
+    env:
+      TOOLS: ${{ needs.prepare.outputs.tools }}
+      GATE: ${{ runner.temp }}/gate   # trusted checkout at the commit prepare judged with
+      QQ_NAME: ${{ matrix.name }}
+      QQ_PLATFORM: ${{ matrix.platform }}
+      REF: ${{ matrix.ref }}
+      LAYER: ${{ matrix.layer_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - name: Pull the pin and check its bytes
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for name in $(jq -r '.[].name' "$RUNNER_TEMP/changed.json"); do
-            echo "::group::verify $name"
-            python -I "$GATE/tools/qqtc.py" smoke "$name" "$RUNNER_TEMP/root/$name"
-            python -I "$GATE/tools/qqtc.py" consumers "$name" "$RUNNER_TEMP/root/$name" --work "$RUNNER_TEMP/consumers/$name"
-            echo "::endgroup::"
-          done
+          set -euo pipefail
+          git worktree add --detach "$GATE" "$TOOLS"
+          ref=${REF#oci://}
+          echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          dir="$RUNNER_TEMP/pull"
+          oras manifest fetch "$ref" > "$RUNNER_TEMP/manifest.json"
+          oras pull "$ref" -o "$dir"
+          oras logout ghcr.io   # consumer code below runs without registry credentials
+          tarball=$(jq -r '.layers[0].annotations["org.opencontainers.image.title"]' "$RUNNER_TEMP/manifest.json")
+          # 4. The pulled bytes are that layer (hashed in Python: the same on every runner).
+          python -I -c 'import hashlib, sys; d = hashlib.file_digest(open(sys.argv[1], "rb"), "sha256").hexdigest(); sys.exit(0 if d == sys.argv[2] else f"pulled layer is sha256:{d}, not sha256:{sys.argv[2]}")' \
+            "$dir/$tarball" "$LAYER"
+          python -I "$GATE/tools/qqtc.py" unpack "$dir/$tarball" "$RUNNER_TEMP/root"
+      - name: Smoke-test and build consumers from the pulled bytes
+        run: |
+          python -I "$GATE/tools/qqtc.py" smoke "$QQ_NAME" "$RUNNER_TEMP/root"
+          python -I "$GATE/tools/qqtc.py" consumers "$QQ_NAME" "$RUNNER_TEMP/root" --work "$RUNNER_TEMP/consumers"
+
+  # The required check: green only when prepare passed and every verify leg did (or there was
+  # nothing to verify).
+  promotion-gate:
+    needs: [prepare, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every gate job passed
+        env:
+          PREPARE: ${{ needs.prepare.result }}
+          VERIFY: ${{ needs.verify.result }}
+          COUNT: ${{ needs.prepare.outputs.count }}
+        run: |
+          echo "prepare=$PREPARE verify=$VERIFY pins=$COUNT"
+          [ "$PREPARE" = success ] || exit 1
+          [ "$VERIFY" = success ] || { [ "$VERIFY" = skipped ] && [ "$COUNT" = 0 ]; }

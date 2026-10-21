@@ -1,19 +1,34 @@
 # Node.js LTS plus pnpm (V0-TCH-02). Next.js 16 runs on Node 24, the current LTS line.
-# Node is repackaged from the official nodejs.org Linux binary, the way Chromium's 3pp
-# repackages upstream binaries; pnpm is the npm registry tarball, unpacked into the toolchain.
-# To move either: change its version and URL, take sha256 from the upstream checksums
+# Node is repackaged from the official nodejs.org binary for each platform, the way Chromium's
+# 3pp repackages upstream binaries; pnpm is the npm registry tarball, unpacked into the toolchain.
+# To move either: change its version and URLs, take sha256 from the upstream checksums
 # (nodejs.org SHASUMS256.txt; for pnpm, verify the npm `integrity` value), reset `revision` to 1.
+# Every platform has the same layout: node, npm, npx, pnpm and pnpx in bin/ (on Windows, .exe and
+# .cmd files next to sh scripts, so both cmd and bash find them).
 
 [toolchain]
 name = "node"
 version = "24.21.0"       # latest 24.x LTS ("Krypton") on 2026-10-04
 revision = 1
-platform = "linux-x86_64"
+platforms = ["linux-x86_64", "macos-arm64", "windows-x86_64"]
 description = "Node.js 24 LTS (official binary) with pnpm 11.28.2."
 
 [[source]]
 url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz"
 sha256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
+platforms = ["linux-x86_64"]
+
+[[source]]
+url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.xz"
+sha256 = "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
+platforms = ["macos-arm64"]
+
+[[source]]
+url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
+sha256 = "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541"
+platforms = ["windows-x86_64"]
+# The three node sha256 values are from https://nodejs.org/dist/v24.21.0/SHASUMS256.txt
+# (read 2026-10-21; the Linux one matches the value pinned on 2026-10-04).
 
 [[source]]
 url = "https://registry.npmjs.org/pnpm/-/pnpm-11.28.2.tgz"
@@ -28,9 +43,10 @@ script = "build.sh"
 [build.github]
 
 [smoke]
+# tr -d '\r': on Windows a program may end its line with CRLF.
 commands = [
-  "test \"$(bin/node --version)\" = v{version}",
-  "test \"$(bin/pnpm --version)\" = 11.28.2",
+  "test \"$(bin/node --version | tr -d '\\r')\" = v{version}",
+  "test \"$(bin/pnpm --version | tr -d '\\r')\" = 11.28.2",
   "bin/npm --version",
   "bin/node -e 'require(\"node:crypto\").createHash(\"sha256\"); console.log(process.versions.openssl)'",
 ]

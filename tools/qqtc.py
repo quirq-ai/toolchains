@@ -5,20 +5,27 @@ Standard library only, so it runs on a bare runner or a fresh machine.
 
     qqtc validate                      check every spec (and promoted.toml, when it exists)
     qqtc list                          print the toolchain names as a JSON array
+    qqtc matrix                        print every (toolchain, platform) to build, with the
+                                       backend's runner for it, as a JSON array
     qqtc ci-config NAME                print the backend's build settings for NAME as JSON
-    qqtc build NAME --out DIR          fetch and verify sources, build, pack, write a record
+    qqtc build NAME --out DIR [--platform P]
+                                       fetch and verify sources, build, pack, write a record;
+                                       P must be this machine's platform (the default)
     qqtc unpack TARBALL DIR            unpack a toolchain tarball safely
     qqtc smoke NAME ROOT               run NAME's smoke commands in an unpacked toolchain
     qqtc consumers NAME ROOT --work W  build NAME's pinned consumer repos with the toolchain
     qqtc promote NAME --record FILE    record a staged build as NAME's promoted pin
     qqtc promoted-changed --base FILE  print the promoted entries that differ from FILE, as JSON
 
-A toolchain lives in toolchains/<name>/ as toolchain.toml plus a build script. `build` writes
-<name>-<version>-r<revision>-<platform>.tar.gz and <name>.record.json; publishing the tarball
-to the registry is the backend's job (see .github/workflows/build.yml for github).
+A toolchain lives in toolchains/<name>/ as toolchain.toml plus a build script. It lists the
+platforms it is built for; each platform is built on a machine of that platform, never
+cross-built. `build` writes <name>-<version>-r<revision>-<platform>.tar.gz and
+<name>.record.json; publishing the tarball to the registry is the backend's job (see
+.github/workflows/build.yml for github).
 
-promoted.toml holds one pin per toolchain: the digest a reviewed PR promoted from staging. The
-toolchain roller reads it to update product repos; nothing else should pin a toolchain.
+promoted.toml holds one pin per toolchain and platform: the digest a reviewed PR promoted from
+staging. The toolchain roller reads it to update product repos; nothing else should pin a
+toolchain.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import gzip
 import hashlib
 import json
 import os
+import platform as _platform
 import posixpath
 import re
 import shutil
@@ -46,7 +54,8 @@ PROMOTED = ROOT / "promoted.toml"
 PROMOTED_SCHEMA = "quirq-toolchains-promoted/1"
 
 BACKENDS = ("github", "launchpad")
-PLATFORMS = ("linux-x86_64",)
+# The <os>-<arch> names quirq-ai/sync uses in manifests (qqsync.pins.current_platform).
+PLATFORMS = ("linux-x86_64", "macos-arm64", "windows-x86_64")
 # Fixed tar mtime (1980-01-01, the earliest zip-safe time) so packing the same tree twice gives
 # the same bytes.
 PACK_EPOCH = 315532800
@@ -109,30 +118,37 @@ def load_spec(name: str, spec_dir: Path = SPEC_DIR) -> dict:
 
     tc = spec.get("toolchain")
     _require(isinstance(tc, dict), where, "missing [toolchain] table")
-    _check_keys(tc, {"name", "version", "revision", "platform", "description"}, f"{where} [toolchain]")
+    _check_keys(tc, {"name", "version", "revision", "platforms", "description"}, f"{where} [toolchain]")
     _require(tc.get("name") == name, where, f"[toolchain].name must equal the directory name {name!r}")
     _require(NAME_RE.match(name) is not None, where, "name must be lowercase letters, digits and '-'")
     _require(isinstance(tc.get("version"), str) and VERSION_RE.match(tc["version"]) is not None,
              where, "[toolchain].version must look like 1.2.3")
     _require(isinstance(tc.get("revision"), int) and tc["revision"] >= 1, where,
              "[toolchain].revision must be an integer >= 1")
-    _require(tc.get("platform") in PLATFORMS, where, f"[toolchain].platform must be one of {PLATFORMS}")
+    plats = tc.get("platforms")
+    _require(isinstance(plats, list) and plats and all(p in PLATFORMS for p in plats)
+             and len(set(plats)) == len(plats), where,
+             f"[toolchain].platforms must be a non-empty list of distinct platforms from {PLATFORMS}")
 
     sources = spec.get("source")
     _require(isinstance(sources, list) and sources, where, "needs at least one [[source]]")
     seen = set()
     for i, src in enumerate(sources):
         w = f"{where} [[source]] #{i + 1}"
-        _check_keys(src, {"url", "sha256", "filename"}, w)
+        _check_keys(src, {"url", "sha256", "filename", "platforms"}, w)
         _require(isinstance(src.get("url"), str) and src["url"].startswith("https://"), w,
                  "url must be an https URL")
         _require(isinstance(src.get("sha256"), str) and SHA256_RE.match(src["sha256"]) is not None, w,
                  "sha256 must be 64 lowercase hex characters")
+        _check_platform_subset(src, plats, w)
         fname = source_filename(src)
         _require(FILENAME_RE.match(fname) is not None, w,
                  f"source file name {fname!r} must be a plain file name (set `filename` if the URL has none)")
         _require(fname not in seen, w, f"two sources save to the same file {fname!r}")
         seen.add(fname)
+    for p in plats:
+        _require(any(p in src.get("platforms", plats) for src in sources), where,
+                 f"no [[source]] for platform {p}")
 
     build = spec.get("build")
     _require(isinstance(build, dict), where, "missing [build] table")
@@ -156,7 +172,8 @@ def load_spec(name: str, spec_dir: Path = SPEC_DIR) -> dict:
 
     for i, con in enumerate(spec.get("consumer", [])):
         w = f"{where} [[consumer]] #{i + 1}"
-        _check_keys(con, {"repo", "commit", "commands"}, w)
+        _check_keys(con, {"repo", "commit", "commands", "platforms"}, w)
+        _check_platform_subset(con, plats, w)
         _require(isinstance(con.get("repo"), str) and con["repo"].startswith("https://"), w,
                  "repo must be an https git URL")
         _require(isinstance(con.get("commit"), str) and GIT_SHA_RE.match(con["commit"]) is not None, w,
@@ -167,6 +184,28 @@ def load_spec(name: str, spec_dir: Path = SPEC_DIR) -> dict:
     return spec
 
 
+def _check_platform_subset(table: dict, plats: list[str], where: str) -> None:
+    """An optional `platforms` list that narrows a source or consumer to some of the toolchain's."""
+    if "platforms" not in table:
+        return
+    p = table["platforms"]
+    _require(isinstance(p, list) and p and all(x in plats for x in p) and len(set(p)) == len(p), where,
+             f"platforms must be a non-empty list of distinct platforms from [toolchain].platforms {plats}")
+
+
+def for_platform(items: list[dict], platform: str) -> list[dict]:
+    """The sources or consumers that apply on `platform` (all, unless one lists its platforms)."""
+    return [i for i in items if "platforms" not in i or platform in i["platforms"]]
+
+
+def host_platform() -> str:
+    """This machine as <os>-<arch>, the way qqsync names it."""
+    os_name = {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform)
+    arch = _platform.machine().lower()
+    arch = {"amd64": "x86_64", "aarch64": "arm64"}.get(arch, arch)
+    return f"{os_name}-{arch}"
+
+
 def toolchain_names(spec_dir: Path = SPEC_DIR) -> list[str]:
     return sorted(p.parent.name for p in spec_dir.glob("*/toolchain.toml"))
 
@@ -175,9 +214,22 @@ def source_filename(src: dict) -> str:
     return src.get("filename") or src["url"].rsplit("/", 1)[-1]
 
 
-def artifact_basename(spec: dict) -> str:
+def artifact_basename(spec: dict, platform: str) -> str:
     tc = spec["toolchain"]
-    return f"{tc['name']}-{tc['version']}-r{tc['revision']}-{tc['platform']}"
+    return f"{tc['name']}-{tc['version']}-r{tc['revision']}-{platform}"
+
+
+def build_matrix(spec_dir: Path = SPEC_DIR, cfg: dict | None = None) -> list[dict]:
+    """Every (toolchain, platform) to build, with the backend's runner for that platform."""
+    cfg = cfg or load_repo_config()
+    runners = cfg[cfg["backend"]].get("runners", {})
+    out = []
+    for name in toolchain_names(spec_dir):
+        for p in load_spec(name, spec_dir)["toolchain"]["platforms"]:
+            _require(isinstance(runners.get(p), str) and runners[p], "toolchains.toml",
+                     f"[{cfg['backend']}.runners] has no runner for {p} (toolchains/{name} needs one)")
+            out.append({"name": name, "platform": p, "runner": runners[p]})
+    return out
 
 
 def registry_repo(cfg: dict, name: str) -> str:
@@ -206,8 +258,9 @@ def check_promoted_entry(entry: dict, cfg: dict, where: str) -> None:
              where, "build_run must be https://github.com/<owner>/<repo>/actions/runs/<id>")
 
 
-def load_promoted(path: Path = PROMOTED, cfg: dict | None = None, spec_dir: Path = SPEC_DIR) -> dict[str, dict]:
-    """Return promoted entries by name. A missing file means nothing is promoted yet."""
+def load_promoted(path: Path = PROMOTED, cfg: dict | None = None,
+                  spec_dir: Path = SPEC_DIR) -> dict[tuple[str, str], dict]:
+    """Return promoted entries by (name, platform). A missing file means nothing is promoted yet."""
     if not path.exists():
         return {}
     cfg = cfg or load_repo_config()
@@ -219,10 +272,11 @@ def load_promoted(path: Path = PROMOTED, cfg: dict | None = None, spec_dir: Path
     for i, entry in enumerate(data.get("toolchain", [])):
         w = f"{where} [[toolchain]] #{i + 1}"
         check_promoted_entry(entry, cfg, w)
-        _require(entry["name"] not in entries, w, f"{entry['name']!r} is promoted twice")
+        key = (entry["name"], entry["platform"])
+        _require(key not in entries, w, f"{entry['name']!r} is promoted twice for {entry['platform']}")
         _require((spec_dir / entry["name"] / "toolchain.toml").is_file(), w,
                  f"no toolchains/{entry['name']}/toolchain.toml for this entry")
-        entries[entry["name"]] = entry
+        entries[key] = entry
     # Only qqtc's own rendering is accepted, so every TOML parser (the roller's included) reads
     # exactly the pins this one does: no comments, reordering or alternative spellings.
     _require(path.read_bytes() == render_promoted(entries).encode(), where,
@@ -240,22 +294,22 @@ def _toml_value(v) -> str:
     return json.dumps(v)
 
 
-def render_promoted(entries: dict[str, dict]) -> str:
+def render_promoted(entries: dict[tuple[str, str], dict]) -> str:
     """The one canonical text of promoted.toml for these entries."""
     lines = [
         "# Promoted toolchains: one pin per toolchain, by digest. Written by `qqtc promote` in a",
         "# reviewed PR; read by the toolchain roller (quirq-ai/rollers, V0-ROL-01). Do not edit by hand.",
         f'schema = "{PROMOTED_SCHEMA}"',
     ]
-    for name in sorted(entries):
+    for key in sorted(entries):
         lines += ["", "[[toolchain]]"]
-        lines += [f"{k} = {_toml_value(entries[name][k])}" for k in PROMOTED_KEYS]
+        lines += [f"{k} = {_toml_value(entries[key][k])}" for k in PROMOTED_KEYS]
     text = "\n".join(lines) + "\n"
     tomllib.loads(text)  # never leave a file that later runs cannot read
     return text
 
 
-def write_promoted(entries: dict[str, dict], path: Path = PROMOTED) -> None:
+def write_promoted(entries: dict[tuple[str, str], dict], path: Path = PROMOTED) -> None:
     text = render_promoted(entries)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text)
@@ -263,7 +317,7 @@ def write_promoted(entries: dict[str, dict], path: Path = PROMOTED) -> None:
 
 
 def promote(record: dict, path: Path = PROMOTED, spec_dir: Path = SPEC_DIR, cfg: dict | None = None) -> dict:
-    """Make a staged build the promoted pin for its toolchain. Returns the new entry."""
+    """Make a staged build the promoted pin for its toolchain on its platform. Returns the new entry."""
     cfg = cfg or load_repo_config()
     _require(isinstance(record, dict), "record", "must be a JSON object")
     entry = {k: record.get(k) for k in PROMOTED_KEYS}
@@ -271,14 +325,25 @@ def promote(record: dict, path: Path = PROMOTED, spec_dir: Path = SPEC_DIR, cfg:
     _require(isinstance(name, str), "record", "missing name")
     spec = load_spec(name, spec_dir)["toolchain"]
     check_promoted_entry(entry, cfg, "record")
-    for k in ("version", "revision", "platform"):
-        _require(entry[k] == spec[k], "record",
-                 f"{k} is {entry[k]!r} but toolchains/{name}/toolchain.toml says {spec[k]!r}; "
+    for problem in spec_mismatch(spec, entry):
+        _require(False, "record", f"{problem} in toolchains/{name}/toolchain.toml; "
                  "promote only a build of the spec as it is now")
     entries = load_promoted(path, cfg, spec_dir)
-    entries[name] = entry
+    entries[(name, entry["platform"])] = entry
     write_promoted(entries, path)
     return entry
+
+
+def spec_mismatch(spec: dict, entry: dict) -> list[str]:
+    """Why a promoted entry is not a build of this [toolchain] table (empty: it is).
+
+    Also reads a spec from before platforms were listed (`platform = "<one>"`), since the gate
+    checks the spec at a pin's built_from commit."""
+    out = [f"{k} is {entry[k]!r}, not {spec.get(k)!r}" for k in ("version", "revision") if entry[k] != spec.get(k)]
+    plats = spec.get("platforms", [spec.get("platform")])
+    if entry["platform"] not in plats:
+        out.append(f"platform {entry['platform']!r} is not one of {plats}")
+    return out
 
 
 def promoted_changed(base: Path | None, path: Path = PROMOTED, spec_dir: Path = SPEC_DIR) -> list[dict]:
@@ -286,12 +351,12 @@ def promoted_changed(base: Path | None, path: Path = PROMOTED, spec_dir: Path = 
     cfg = load_repo_config()
     now = load_promoted(path, cfg, spec_dir)
     before = load_promoted(base, cfg, spec_dir) if base and base.exists() and base.stat().st_size else {}
-    changed = [e for n, e in sorted(now.items()) if before.get(n) != e]
+    changed = [e for key, e in sorted(now.items()) if before.get(key) != e]
     for e in changed:
         spec = load_spec(e["name"], spec_dir)["toolchain"]
-        for k in ("version", "revision", "platform"):
-            _require(e[k] == spec[k], path.name,
-                     f"{e['name']}: promoted {k} {e[k]!r} does not match its spec ({spec[k]!r})")
+        for problem in spec_mismatch(spec, e):
+            _require(False, path.name, f"{e['name']} ({e['platform']}): promoted {problem}; "
+                     "it does not match its spec")
     return changed
 
 
@@ -330,10 +395,10 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def fetch_sources(spec: dict, dest: Path) -> None:
-    """Download every source into dest and verify it against its pinned sha256."""
+def fetch_sources(spec: dict, dest: Path, platform: str) -> None:
+    """Download every source for `platform` into dest and verify it against its pinned sha256."""
     dest.mkdir(parents=True, exist_ok=True)
-    for src in spec["source"]:
+    for src in for_platform(spec["source"], platform):
         target = dest / source_filename(src)
         if not target.exists() or sha256_file(target) != src["sha256"]:
             print(f"fetch {src['url']}", flush=True)
@@ -383,27 +448,50 @@ def unpack(tarball: Path, dest: Path) -> None:
         tar.extractall(dest, filter="data")
 
 
-def build(name: str, out: Path, spec_dir: Path = SPEC_DIR) -> dict:
+def _bash() -> str:
+    """The bash to run scripts with. On Windows that is Git's bash, found on PATH: a bare "bash"
+    would find System32's WSL launcher first, which runs Linux, not this machine."""
+    found = shutil.which("bash")
+    if found is None:
+        raise SpecError("bash not found on PATH (on Windows, install Git for Windows)")
+    return found
+
+
+def _bash_path(p: Path | str) -> str:
+    """A path as bash sees it: C:\\a\\b becomes /c/a/b on Windows (GNU tar reads `C:` as a host)."""
+    s = str(p)
+    if os.name == "nt" and len(s) > 1 and s[1] == ":":
+        return "/" + s[0].lower() + s[2:].replace("\\", "/")
+    return s
+
+
+def build(name: str, out: Path, spec_dir: Path = SPEC_DIR, platform: str | None = None) -> dict:
     spec = load_spec(name, spec_dir)
+    platform = platform or host_platform()
+    _require(platform in spec["toolchain"]["platforms"], f"toolchains/{name}/toolchain.toml",
+             f"{platform} is not in [toolchain].platforms {spec['toolchain']['platforms']}")
+    _require(platform == host_platform(), name,
+             f"cannot build for {platform} on this {host_platform()} machine; build it on a {platform} runner")
     out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f"qqtc-{name}-"))
     sources, scratch, prefix = work / "sources", work / "work", work / "prefix"
     scratch.mkdir()
     prefix.mkdir()
-    fetch_sources(spec, sources)
-    env = dict(os.environ, QQ_SOURCES=str(sources), QQ_WORK=str(scratch), QQ_PREFIX=str(prefix),
-               QQ_VERSION=spec["toolchain"]["version"], QQ_NAME=name)
+    fetch_sources(spec, sources, platform)
+    env = dict(os.environ, QQ_SOURCES=_bash_path(sources), QQ_WORK=_bash_path(scratch),
+               QQ_PREFIX=_bash_path(prefix), QQ_VERSION=spec["toolchain"]["version"], QQ_NAME=name,
+               QQ_PLATFORM=platform, QQ_PYTHON=_bash_path(sys.executable))
     script = spec_dir / name / spec["build"]["script"]
-    subprocess.run(["bash", str(script)], env=env, check=True)
+    subprocess.run([_bash(), _bash_path(script)], env=env, check=True)
 
-    tarball = out / f"{artifact_basename(spec)}.tar.gz"
+    tarball = out / f"{artifact_basename(spec, platform)}.tar.gz"
     pack(prefix, tarball)
     tc = spec["toolchain"]
     record = {
         "name": name,
         "version": tc["version"],
         "revision": tc["revision"],
-        "platform": tc["platform"],
+        "platform": platform,
         "file": tarball.name,
         "layer_sha256": sha256_file(tarball),
         "size": tarball.stat().st_size,
@@ -420,11 +508,13 @@ def build(name: str, out: Path, spec_dir: Path = SPEC_DIR) -> dict:
 
 def _run_shell(cmd: str, cwd: Path, env: dict) -> None:
     print(f"$ {cmd}", flush=True)
-    subprocess.run(["bash", "-euo", "pipefail", "-c", cmd], cwd=cwd, env=env, check=True)
+    subprocess.run([_bash(), "-euo", "pipefail", "-c", cmd], cwd=cwd, env=env, check=True)
 
 
 def toolchain_env(root: Path) -> dict:
-    env = dict(os.environ)
+    """This environment with the toolchain's bin/ first on PATH and QQ_PLATFORM set, so smoke and
+    consumer commands can tell the platforms apart."""
+    env = dict(os.environ, QQ_PLATFORM=host_platform())
     env["PATH"] = f"{root / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     return env
 
@@ -441,7 +531,7 @@ def consumers(name: str, root: Path, work: Path, spec_dir: Path = SPEC_DIR) -> N
     """Check out each pinned consumer repo and run its build with only this toolchain on PATH first."""
     spec = load_spec(name, spec_dir)
     env = toolchain_env(root)
-    for con in spec.get("consumer", []):
+    for con in for_platform(spec.get("consumer", []), host_platform()):
         repo_dir = work / con["repo"].rstrip("/").rsplit("/", 1)[-1]
         if repo_dir.exists():
             shutil.rmtree(repo_dir)
@@ -462,11 +552,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate")
     sub.add_parser("list")
+    sub.add_parser("matrix")
     p = sub.add_parser("ci-config")
     p.add_argument("name")
     p = sub.add_parser("build")
     p.add_argument("name")
     p.add_argument("--out", type=Path, default=ROOT / "out")
+    p.add_argument("--platform", help="must be this machine's platform (the default)")
     p = sub.add_parser("unpack")
     p.add_argument("tarball", type=Path)
     p.add_argument("dest", type=Path)
@@ -493,12 +585,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if problems else 0
         if args.cmd == "list":
             print(json.dumps(toolchain_names()))
+        elif args.cmd == "matrix":
+            print(json.dumps(build_matrix()))
         elif args.cmd == "ci-config":
             backend = load_repo_config()["backend"]
             spec = load_spec(args.name)
             print(json.dumps(spec["build"].get(backend, {}), sort_keys=True))
         elif args.cmd == "build":
-            build(args.name, args.out.resolve())
+            build(args.name, args.out.resolve(), platform=args.platform)
         elif args.cmd == "unpack":
             unpack(args.tarball, args.dest)
         elif args.cmd == "smoke":
@@ -515,7 +609,8 @@ def main(argv: list[str] | None = None) -> int:
             _require(record.get("name") == args.name, "record",
                      f"record is for {record.get('name')!r}, not {args.name!r}")
             entry = promote(record)
-            print(f"promoted {entry['name']} {entry['version']}-r{entry['revision']}: {entry['ref']}")
+            print(f"promoted {entry['name']} {entry['version']}-r{entry['revision']} "
+                  f"({entry['platform']}): {entry['ref']}")
         elif args.cmd == "promoted-changed":
             print(json.dumps(promoted_changed(args.base)))
     except SpecError as e:

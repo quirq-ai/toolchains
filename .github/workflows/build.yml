@@ -1,5 +1,6 @@
-# Builds every toolchain, smoke-tests it, and builds its pinned consumer repos with it.
-# On main it also publishes each toolchain to staging on the registry, before any consumer code runs.
+# Builds every toolchain for each of its platforms, each on a runner of that platform (never
+# cross-built), smoke-tests it, and builds its pinned consumer repos with it there.
+# On main it also publishes each build to staging on the registry, before any consumer code runs.
 # Every action is pinned by commit: the publish job can push and sign, and the build job makes
 # the bytes it signs.
 # This is the github backend's builder; qqtc itself does not know about GitHub.
@@ -25,7 +26,7 @@ jobs:
   plan:
     runs-on: ubuntu-24.04
     outputs:
-      names: ${{ steps.list.outputs.names }}
+      matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,16 +34,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+      # [{name, platform, runner}] for every toolchain and platform; runners from toolchains.toml.
       - id: list
-        run: echo "names=$(python tools/qqtc.py list)" >> "$GITHUB_OUTPUT"
+        run: echo "matrix=$(python tools/qqtc.py matrix)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: plan
     strategy:
       fail-fast: false
       matrix:
-        name: ${{ fromJSON(needs.plan.outputs.names) }}
-    runs-on: ubuntu-24.04
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     # No write permissions: this job runs build scripts. Consumer repos' code runs in the
     # consumers job, after publish, so their dependencies never share a job with the bytes
@@ -51,6 +53,7 @@ jobs:
       contents: read
     env:
       QQ_NAME: ${{ matrix.name }}
+      QQ_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +62,7 @@ jobs:
         with:
           python-version: "3.14"   # runs qqtc only; the toolchain under test comes first on PATH
       - name: Install build packages
+        if: runner.os == 'Linux'
         run: |
           python tools/qqtc.py ci-config "$QQ_NAME" > "$RUNNER_TEMP/ci-config.json"
           pkgs=$(jq -r '.apt_packages // [] | join(" ")' "$RUNNER_TEMP/ci-config.json")
@@ -67,12 +71,12 @@ jobs:
             sudo apt-get install -y -qq --no-install-recommends $pkgs
           fi
       - name: Build
-        run: python tools/qqtc.py build "$QQ_NAME" --out out
+        run: python tools/qqtc.py build "$QQ_NAME" --platform "$QQ_PLATFORM" --out out
       # Keep the built bytes before anything else runs, so smoke-test code cannot
       # change what gets published.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: toolchain-${{ matrix.name }}
+          name: toolchain-${{ matrix.name }}-${{ matrix.platform }}
           path: out/
           if-no-files-found: error
           retention-days: 7
@@ -88,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: ${{ fromJSON(needs.plan.outputs.names) }}
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -98,13 +102,14 @@ jobs:
       attestations: write
     env:
       QQ_NAME: ${{ matrix.name }}
+      QQ_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: toolchain-${{ matrix.name }}
+          name: toolchain-${{ matrix.name }}-${{ matrix.platform }}
           path: out
       - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Publish to staging
@@ -117,7 +122,8 @@ jobs:
           record="out/$QQ_NAME.record.json"
           file=$(jq -r .file "$record")
           echo "$(jq -r .layer_sha256 "$record")  out/$file" | sha256sum -c -
-          tag="staging-$(jq -r '"\(.version)-r\(.revision)"' "$record")-${GITHUB_SHA::12}"
+          jq -e --arg p "$QQ_PLATFORM" '.platform == $p' "$record" >/dev/null
+          tag="staging-$(jq -r '"\(.version)-r\(.revision)-\(.platform)"' "$record")-${GITHUB_SHA::12}"
           repo="$registry/$QQ_NAME"
           echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$REGISTRY_USER" --password-stdin
           cd out
@@ -135,7 +141,7 @@ jobs:
           jq --arg ref "$ref" --arg tag "$tag" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '. + {ref: $ref, staging_tag: $tag, build_run: $run}' "$QQ_NAME.record.json" > staged.json
           {
-            echo "### Staged \`$QQ_NAME\`"
+            echo "### Staged \`$QQ_NAME\` for \`$QQ_PLATFORM\`"
             echo
             echo "Staging happens before consumer builds run. Promote it only if this run's \`consumers\` job is green, with a PR that runs:"
             echo
@@ -167,13 +173,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: ${{ fromJSON(needs.plan.outputs.names) }}
-    runs-on: ubuntu-24.04
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
     env:
       QQ_NAME: ${{ matrix.name }}
+      QQ_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -183,7 +190,7 @@ jobs:
           python-version: "3.14"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: toolchain-${{ matrix.name }}
+          name: toolchain-${{ matrix.name }}-${{ matrix.platform }}
           path: out
       - name: Build consumer repos with it
         run: |

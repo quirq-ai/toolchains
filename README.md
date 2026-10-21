@@ -12,7 +12,12 @@ digest, never by a moving version.
 
 - **Transport.** OCI artifacts on `ghcr.io/quirq-ai/toolchains/<name>`, addressed by digest (plan
   decision D6). v0 has no containers, so each artifact is one tarball layer that `qq sync`
-  unpacks without a container runtime. Linux x86_64 only.
+  unpacks without a container runtime.
+- **Platforms.** `linux-x86_64`, `macos-arm64` (Apple silicon) and `windows-x86_64`, named as
+  quirq-ai/sync names them. A spec lists its `platforms`; each is built, smoke-tested and checked
+  on a GitHub runner of that platform (`toolchains.toml` `[github.runners]`), never cross-built.
+  A `[[source]]` or `[[consumer]]` can name the `platforms` it applies to. `promoted.toml` holds
+  one pin per toolchain and platform. Node is built for all three; Python for Linux only so far.
 - **Staging.** A change to a toolchain's spec is built in CI and pushed with a `staging-…` tag.
 - **Promotion.** A reviewed PR moves the staged digest into `promoted.toml`. That file is what the
   roller reads to update pins in product repos.
@@ -21,14 +26,14 @@ digest, never by a moving version.
 
 1. Edit `toolchains/<name>/toolchain.toml` (version, source URL and sha256) and its `build.sh`.
    Open a PR. The `build` check builds it, smoke-tests it, and builds its pinned consumer repos.
-2. When it lands, `build` on `main` stages it as `ghcr.io/quirq-ai/toolchains/<name>:staging-…`
+2. When it lands, `build` on `main` stages each platform as `ghcr.io/quirq-ai/toolchains/<name>:staging-…`
    and prints a ready-made record in the run summary. Staging happens before the consumer builds
    run, so a staged digest is promotable only if that run's `consumers` job is green.
 3. Promote it in its own PR: `python tools/qqtc.py promote <name> --record staged.json`, which
    rewrites `promoted.toml` in its one canonical form (hand edits are refused). That PR may change
    only `promoted.toml` and `README.md`. The `promotion-gate` check pulls the digest, checks that
    a staging build of a commit on `main` produced exactly those bytes, and re-runs the smoke tests
-   and consumer builds on them. It runs main's `qqtc`, `gate.py` and specs, never the PR's (the
+   and consumer builds on them, on a runner of the pin's platform. It runs main's `qqtc`, `gate.py` and specs, never the PR's (the
    workflow file that picks them is the PR's, see the caveat under "Needs suraj"), and judges
    what will actually merge. On every PR it also refuses workflows that could fake it:
    another check named `promotion-gate`, changed gate triggers, or a token that can write checks

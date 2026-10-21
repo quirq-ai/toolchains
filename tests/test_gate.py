@@ -49,7 +49,7 @@ def spec(version: str = "1.2.3") -> str:
         name = "demo"
         version = "{version}"
         revision = 1
-        platform = "linux-x86_64"
+        platforms = ["linux-x86_64"]
 
         [[source]]
         url = "https://example.org/demo-{version}.tar.gz"
@@ -81,7 +81,7 @@ def repo(tmp_path: Path):
         "tools/gate.py": (ROOT / "tools/gate.py").read_text(),
         ".github/workflows/promotion-gate.yml": GATE_YML,
         ".github/workflows/ci.yml": CI_YML,
-        "promoted.toml": qqtc.render_promoted({"demo": pin()}),
+        "promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin()}),
         "README.md": "readme\n",
     }
     commit(r, files, "main")
@@ -102,7 +102,7 @@ def run_prepare(repo: Path, head: str, event: str = "pull_request", base: str | 
 
 def test_promotion_only_pr_passes_and_lists_the_moved_pin(repo):
     branch(repo)
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)}),
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)}),
                          "README.md": "now promoted\n"})
     plan = run_prepare(repo, head)
     assert [e["ref"].rsplit("@", 1)[1] for e in plan["changed"]] == ["sha256:" + "e" * 64]
@@ -111,7 +111,7 @@ def test_promotion_only_pr_passes_and_lists_the_moved_pin(repo):
 @pytest.mark.parametrize("extra", ["tools/qqtc.py", ".github/workflows/ci.yml", "toolchains/demo/build.sh"])
 def test_promotion_with_any_other_file_is_refused(repo, extra):
     branch(repo)
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)}),
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)}),
                          extra: "# changed\n"})
     with pytest.raises(gate.GateError, match="may change only promoted.toml"):
         run_prepare(repo, head)
@@ -120,7 +120,7 @@ def test_promotion_with_any_other_file_is_refused(repo, extra):
 def test_rename_onto_readme_still_names_the_source(repo):
     branch(repo)
     sh(repo, "mv", "-f", "tools/qqtc.py", "README.md")
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})})
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)})})
     with pytest.raises(gate.GateError, match="tools/qqtc.py"):
         run_prepare(repo, head)
 
@@ -129,22 +129,22 @@ def test_stale_tools_only_pr_is_not_mistaken_for_a_promotion(repo):
     branch(repo)
     head = commit(repo, {"tools/notes.txt": "x\n"})
     sh(repo, "checkout", "-q", "main")
-    commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "f" * 64)})})
+    commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "f" * 64)})})
     assert run_prepare(repo, head)["changed"] == []
 
 
 def test_judges_the_merged_promoted_toml(repo):
     branch(repo)
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})})
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)})})
     sh(repo, "checkout", "-q", "main")
-    commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "f" * 64)})})
+    commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "f" * 64)})})
     with pytest.raises(gate.GateError, match="conflicts with main"):
         run_prepare(repo, head)
 
 
 def test_non_canonical_promoted_toml_is_refused(repo):
     branch(repo)
-    text = qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)}) + "# hand edit\n"
+    text = qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)}) + "# hand edit\n"
     head = commit(repo, {"promoted.toml": text})
     with pytest.raises(qqtc.SpecError, match="canonical"):
         run_prepare(repo, head)
@@ -152,7 +152,7 @@ def test_non_canonical_promoted_toml_is_refused(repo):
 
 def test_pin_must_match_the_spec(repo):
     branch(repo)
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(version="9.9.9")})})
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(version="9.9.9")})})
     with pytest.raises(qqtc.SpecError, match="does not match its spec"):
         run_prepare(repo, head)
 
@@ -197,7 +197,7 @@ def test_gate_triggers_declared_twice_is_refused(repo):
 
 def test_lone_carriage_returns_are_not_canonical(repo):
     branch(repo)
-    text = qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})
+    text = qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)})
     head = commit(repo, {"promoted.toml": text.replace("\n[[toolchain]]", "\r[[toolchain]]")})
     with pytest.raises(qqtc.SpecError):
         run_prepare(repo, head)
@@ -210,7 +210,7 @@ def test_merge_inside_the_pr_cannot_hide_a_change(repo):
     sh(repo, "checkout", "-q", "main")
     branch(repo)
     sh(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "m", "side")
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})})
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)})})
     with pytest.raises(gate.GateError, match="tools/qqtc.py"):
         run_prepare(repo, head)
 
@@ -279,7 +279,7 @@ def test_pull_request_target_is_no_longer_a_gate_event(repo):
 
 def _pick_tools(repo: Path, event: str, base: str, head: str) -> subprocess.CompletedProcess:
     """Run the workflow's own `case` that picks the trusted tools commit, as the step does."""
-    step = next(st["run"] for st in yaml.safe_load(GATE_YML)["jobs"]["promotion-gate"]["steps"]
+    step = next(st["run"] for st in yaml.safe_load(GATE_YML)["jobs"]["prepare"]["steps"]
                 if st.get("id") == "changed")
     case = step[step.index('case "$GITHUB_EVENT_NAME" in'):step.index("esac") + len("esac")]
     env = {"PATH": os.environ["PATH"], "GITHUB_EVENT_NAME": event, "BASE": base, "HEAD": head}
@@ -305,9 +305,9 @@ def test_prepare_from_the_trusted_worktree_ignores_the_checkouts_gitattributes(r
     # The step runs prepare from inside $GATE. An untracked .gitattributes in the PR checkout
     # (merge=union) must not turn a conflicting promoted.toml into a clean merge.
     sh(repo, "checkout", "-q", "-b", "side", "main")
-    side = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "c" * 64)})})
+    side = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "c" * 64)})})
     sh(repo, "checkout", "-q", "main")
-    commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "d" * 64)})})
+    commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "d" * 64)})})
     (repo / ".gitattributes").write_text("promoted.toml merge=union\n")
     main = sh(repo, "rev-parse", "main")
     gate_dir = repo.parent / "gate-wt"
@@ -332,7 +332,7 @@ def test_ordinary_workflow_change_passes(repo):
 def test_merge_group_refuses_gate_and_promotion_together(repo):
     base = sh(repo, "rev-parse", "main")
     branch(repo)
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)}),
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)}),
                          ".github/workflows/ci.yml": CI_YML + "# x\n"})
     with pytest.raises(gate.GateError, match="separate groups"):
         run_prepare(repo, head, event="merge_group", base=base)
@@ -341,7 +341,7 @@ def test_merge_group_refuses_gate_and_promotion_together(repo):
 def test_merge_group_promotion_passes(repo):
     base = sh(repo, "rev-parse", "main")
     branch(repo)
-    head = commit(repo, {"promoted.toml": qqtc.render_promoted({"demo": pin(digest="sha256:" + "e" * 64)})})
+    head = commit(repo, {"promoted.toml": qqtc.render_promoted({("demo", "linux-x86_64"): pin(digest="sha256:" + "e" * 64)})})
     assert len(run_prepare(repo, head, event="merge_group", base=base)["changed"]) == 1
 
 
@@ -365,3 +365,26 @@ def test_error_output_cannot_start_a_workflow_command(capsys, tmp_path):
     out = capsys.readouterr().err.splitlines()
     assert out[0].startswith("::error::")
     assert all(line.startswith("- ") for line in out[1:])
+
+
+def test_the_required_check_waits_for_prepare_and_every_verify_leg():
+    jobs = yaml.safe_load(GATE_YML)["jobs"]
+    assert jobs["promotion-gate"]["needs"] == ["prepare", "verify"]
+    assert jobs["promotion-gate"]["if"] == "always()"
+    assert jobs["verify"]["needs"] == "prepare"
+    run = jobs["promotion-gate"]["steps"][0]["run"]
+    env = jobs["promotion-gate"]["steps"][0]["env"]
+    assert set(env) == {"PREPARE", "VERIFY", "COUNT"}
+
+    def passes(prepare, verify, count):
+        r = subprocess.run(["bash", "-eo", "pipefail", "-c", run], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "PREPARE": prepare, "VERIFY": verify, "COUNT": count})
+        return r.returncode == 0
+
+    assert passes("success", "success", "2")
+    assert passes("success", "skipped", "0")
+    assert not passes("success", "skipped", "1")
+    assert not passes("success", "failure", "1")
+    assert not passes("success", "cancelled", "1")
+    assert not passes("failure", "skipped", "0")
+    assert not passes("cancelled", "skipped", "")

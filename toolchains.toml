@@ -5,3 +5,11 @@ backend = "github"        # github now; launchpad (quirq's own cloud) later
 [github]
 # Each toolchain is published as <registry>/<name>, addressed by digest (plan D6).
 registry = "ghcr.io/quirq-ai/toolchains"
+
+# The runner each platform is built and checked on. Toolchains are never cross-built: a
+# platform's bytes come from a machine of that platform. GitHub's hosted runners are free for
+# public repos.
+[github.runners]
+linux-x86_64 = "ubuntu-24.04"
+macos-arm64 = "macos-15"          # Apple silicon
+windows-x86_64 = "windows-2025"

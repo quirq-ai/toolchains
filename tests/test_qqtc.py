@@ -39,7 +39,7 @@ def write_spec(spec_dir: Path, name: str = "demo", body: str | None = None, scri
             name = "{name}"
             version = "1.2.3"
             revision = 1
-            platform = "linux-x86_64"
+            platforms = ["linux-x86_64"]
 
             [[source]]
             url = "https://example.invalid/demo-1.2.3.tar.gz"
@@ -98,7 +98,7 @@ def test_repo_consumers_are_pinned():
 
 def test_valid_spec_loads(spec_dir):
     spec = qqtc.load_spec("demo", spec_dir)
-    assert qqtc.artifact_basename(spec) == "demo-1.2.3-r1-linux-x86_64"
+    assert qqtc.artifact_basename(spec, "linux-x86_64") == "demo-1.2.3-r1-linux-x86_64"
 
 
 @pytest.mark.parametrize(
@@ -107,7 +107,11 @@ def test_valid_spec_loads(spec_dir):
         ('name = "demo"', 'name = "other"', "directory name"),
         ('version = "1.2.3"', 'version = "latest"', "version"),
         ("revision = 1", "revision = 0", "revision"),
-        ('platform = "linux-x86_64"', 'platform = "windows"', "platform"),
+        ('platforms = ["linux-x86_64"]', 'platforms = ["windows"]', "platforms"),
+        ('platforms = ["linux-x86_64"]', 'platforms = []', "platforms"),
+        ('platforms = ["linux-x86_64"]', 'platforms = ["linux-x86_64", "linux-x86_64"]', "distinct"),
+        ('platforms = ["linux-x86_64"]', 'platform = "linux-x86_64"', "unknown key"),
+        ('sha256 = "' + PAYLOAD_SHA + '"', 'sha256 = "' + PAYLOAD_SHA + '"\nplatforms = ["macos-arm64"]', "platforms must be"),
         ("https://example.invalid", "http://example.invalid", "https"),
         (PAYLOAD_SHA, "abc", "sha256"),
         ('script = "build.sh"', 'script = "missing.sh"', "script"),
@@ -124,6 +128,67 @@ def test_invalid_spec_is_rejected(spec_dir, old, new, message):
     path.write_text(path.read_text().replace(old, new, 1))
     with pytest.raises(qqtc.SpecError, match=message):
         qqtc.load_spec("demo", spec_dir)
+
+
+def test_every_platform_needs_a_source(spec_dir):
+    path = spec_dir / "demo" / "toolchain.toml"
+    text = path.read_text().replace('platforms = ["linux-x86_64"]', 'platforms = ["linux-x86_64", "macos-arm64"]')
+    path.write_text(text.replace(f'sha256 = "{PAYLOAD_SHA}"', f'sha256 = "{PAYLOAD_SHA}"\nplatforms = ["linux-x86_64"]'))
+    with pytest.raises(qqtc.SpecError, match="no \\[\\[source\\]\\] for platform macos-arm64"):
+        qqtc.load_spec("demo", spec_dir)
+
+
+def test_sources_and_consumers_narrow_to_their_platforms():
+    items = [{"url": "a"}, {"url": "b", "platforms": ["macos-arm64"]}, {"url": "c", "platforms": ["linux-x86_64"]}]
+    assert [i["url"] for i in qqtc.for_platform(items, "linux-x86_64")] == ["a", "c"]
+    assert [i["url"] for i in qqtc.for_platform(items, "macos-arm64")] == ["a", "b"]
+
+
+def test_host_platform_uses_qqsync_names(monkeypatch):
+    for sys_platform, machine, want in [("linux", "x86_64", "linux-x86_64"), ("darwin", "arm64", "macos-arm64"),
+                                        ("win32", "AMD64", "windows-x86_64")]:
+        monkeypatch.setattr(qqtc.sys, "platform", sys_platform)
+        monkeypatch.setattr(qqtc._platform, "machine", lambda m=machine: m)
+        assert qqtc.host_platform() == want
+
+
+def test_build_refuses_another_platform(spec_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(qqtc, "host_platform", lambda: "linux-x86_64")
+    path = spec_dir / "demo" / "toolchain.toml"
+    path.write_text(path.read_text().replace('platforms = ["linux-x86_64"]', 'platforms = ["linux-x86_64", "macos-arm64"]'))
+    with pytest.raises(qqtc.SpecError, match="cannot build for macos-arm64"):
+        qqtc.build("demo", tmp_path / "out", spec_dir, platform="macos-arm64")
+    with pytest.raises(qqtc.SpecError, match="not in \\[toolchain\\].platforms"):
+        qqtc.build("demo", tmp_path / "out", spec_dir, platform="windows-x86_64")
+
+
+def test_matrix_names_a_runner_per_platform(spec_dir):
+    cfg = {"backend": "github", "github": {"registry": "r", "runners": {"linux-x86_64": "ubuntu-24.04"}}}
+    assert qqtc.build_matrix(spec_dir, cfg) == [{"name": "demo", "platform": "linux-x86_64", "runner": "ubuntu-24.04"}]
+    del cfg["github"]["runners"]["linux-x86_64"]
+    with pytest.raises(qqtc.SpecError, match="no runner for linux-x86_64"):
+        qqtc.build_matrix(spec_dir, cfg)
+
+
+def test_repo_matrix_builds_node_everywhere_and_python_on_linux():
+    got = {(m["name"], m["platform"]) for m in qqtc.build_matrix()}
+    assert got == {("node", "linux-x86_64"), ("node", "macos-arm64"), ("node", "windows-x86_64"),
+                   ("python", "linux-x86_64")}
+
+
+def test_one_toolchain_is_promoted_once_per_platform(spec_dir, tmp_path):
+    path = spec_dir / "demo" / "toolchain.toml"
+    path.write_text(path.read_text().replace('platforms = ["linux-x86_64"]', 'platforms = ["linux-x86_64", "macos-arm64"]'))
+    promoted = tmp_path / "promoted.toml"
+    qqtc.promote(staged_record(), promoted, spec_dir, REPO_CFG)
+    mac = "sha256:" + "34" * 32
+    qqtc.promote(staged_record(platform="macos-arm64", ref=f"oci://ghcr.io/quirq-ai/toolchains/demo@{mac}"),
+                 promoted, spec_dir, REPO_CFG)
+    entries = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)
+    assert sorted(entries) == [("demo", "linux-x86_64"), ("demo", "macos-arm64")]
+    assert entries[("demo", "macos-arm64")]["ref"].endswith(mac)
+    assert qqtc.spec_mismatch({"version": "1.2.3", "revision": 1, "platform": "linux-x86_64"},
+                              entries[("demo", "linux-x86_64")]) == []
 
 
 def test_unpinned_consumer_is_rejected(spec_dir):
@@ -151,7 +216,7 @@ def test_repo_config_requires_active_backend_table(tmp_path):
 def test_fetch_rejects_a_mismatched_download(spec_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(qqtc.urllib.request, "urlopen", lambda url, timeout=None: io.BytesIO(b"tampered"))
     with pytest.raises(qqtc.SpecError, match="sha256 mismatch"):
-        qqtc.fetch_sources(qqtc.load_spec("demo", spec_dir), tmp_path / "src")
+        qqtc.fetch_sources(qqtc.load_spec("demo", spec_dir), tmp_path / "src", "linux-x86_64")
 
 
 def make_tree(root: Path) -> Path:
@@ -309,8 +374,8 @@ def test_promote_writes_a_readable_pin(spec_dir, tmp_path):
     promoted = tmp_path / "promoted.toml"
     qqtc.promote(staged_record(), promoted, spec_dir, REPO_CFG)
     entries = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)
-    assert entries["demo"]["ref"].endswith(DIGEST)
-    assert "staging_tag" not in entries["demo"] and "file" not in entries["demo"]
+    assert entries[("demo", "linux-x86_64")]["ref"].endswith(DIGEST)
+    assert "staging_tag" not in entries[("demo", "linux-x86_64")] and "file" not in entries[("demo", "linux-x86_64")]
 
 
 def test_promote_replaces_only_its_own_entry(spec_dir, tmp_path):
@@ -322,8 +387,8 @@ def test_promote_replaces_only_its_own_entry(spec_dir, tmp_path):
     newer = "sha256:" + "12" * 32
     qqtc.promote(staged_record(ref=f"oci://ghcr.io/quirq-ai/toolchains/demo@{newer}"), promoted, spec_dir, REPO_CFG)
     entries = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)
-    assert entries["demo"]["ref"].endswith(newer)
-    assert entries["other"]["ref"].endswith(DIGEST)
+    assert entries[("demo", "linux-x86_64")]["ref"].endswith(newer)
+    assert entries[("other", "linux-x86_64")]["ref"].endswith(DIGEST)
 
 
 def test_promote_output_is_stable(spec_dir, tmp_path):
@@ -418,7 +483,7 @@ def test_written_promoted_file_round_trips(spec_dir, tmp_path):
     promoted = tmp_path / "promoted.toml"
     record = staged_record()
     qqtc.promote(record, promoted, spec_dir, REPO_CFG)
-    entry = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)["demo"]
+    entry = qqtc.load_promoted(promoted, REPO_CFG, spec_dir)[("demo", "linux-x86_64")]
     assert entry == {k: record[k] for k in qqtc.PROMOTED_KEYS}
 
 
