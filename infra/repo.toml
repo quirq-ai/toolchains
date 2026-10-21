@@ -1,7 +1,9 @@
 # Compatibility only, not onboarded. quirq-ai/test-pipelines' daily compat check validates this
 # manifest, runs `qq sync` and the kind's commands from infra-config, and shows the result on the
 # scorecard. This repo is not in infra-config's repos.toml, so no generated workflow, builder or
-# roller reads this file, and its pins move only when someone runs `qqsync pin`.
+# roller reads this file. Nothing rolls its pins: toolchains move only with `qqsync pin`, and [qq]
+# only by hand. While [qq] differs from the running qq's version, qq here installs the pinned one,
+# and fails if quirq-ai/qq has no tag for it (it has none yet).
 #
 # quirq infra (qq) manifest, schema quirq-repo/1 (quirq-ai/sync), written by `qqsync init`. Tools read
 # it only through qqsync (`qqsync show` or the qqsync.manifest library), never another parser.
